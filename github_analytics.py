@@ -243,9 +243,8 @@ class GitHubAnalytics:
         """
         Analyze file modification timestamps in a repository.
         
-        This helps identify activity even when commits are sparse by looking at
-        when files were last modified. Useful for catching uncommitted work or
-        understanding file activity patterns.
+        This tracks file activity patterns through commit history, helping identify
+        activity even when commits are sparse by counting unique files modified per day.
         
         Args:
             repo: GitHub repository object
@@ -256,8 +255,7 @@ class GitHubAnalytics:
             Dictionary with per-user, per-day file modification statistics
         """
         data = defaultdict(lambda: defaultdict(lambda: {
-            'files_modified': 0,
-            'modification_activity': 0
+            'files_modified': 0
         }))
         
         try:
@@ -286,11 +284,10 @@ class GitHubAnalytics:
                         for file in files:
                             file_path = file.filename
                             
-                            # Track this file modification
+                            # Track this file modification (unique per day)
                             file_key = f"{file_path}:{date_key}"
                             if file_key not in file_modifications:
                                 data[author][date_key]['files_modified'] += 1
-                                data[author][date_key]['modification_activity'] += 1
                                 file_modifications[file_key] = True
                     except Exception:
                         pass  # Some commits may not have file details
