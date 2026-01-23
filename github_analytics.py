@@ -9,28 +9,102 @@ estimated work hours. Generates daily breakdown spreadsheets.
 
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 from collections import defaultdict
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Set
 import pandas as pd
-from github import Github, GithubException
+from github import Github, GithubException, RateLimitExceededException
 from dotenv import load_dotenv
 
 
 class GitHubAnalytics:
     """Analyzes GitHub repository activity and generates reports."""
     
-    def __init__(self, token: str, username: str):
+    def __init__(self, token: str, username: str, enable_rate_limiting: bool = True):
         """
         Initialize GitHub Analytics.
         
         Args:
             token: GitHub Personal Access Token
             username: GitHub username whose repositories to analyze
+            enable_rate_limiting: Enable automatic rate limit handling (default: True)
         """
         self.github = Github(token)
         self.username = username
         self.user = self.github.get_user(username)
+        self.enable_rate_limiting = enable_rate_limiting
+        self.api_calls_made = 0
+        self.backoff_time = 1  # Initial backoff time in seconds
+        
+    def check_rate_limit(self):
+        """
+        Check GitHub API rate limit and wait if necessary.
+        
+        Implements exponential backoff when approaching rate limits.
+        """
+        if not self.enable_rate_limiting:
+            return
+            
+        try:
+            rate_limit = self.github.get_rate_limit()
+            core = rate_limit.core
+            
+            # Log rate limit status every 100 calls
+            if self.api_calls_made % 100 == 0:
+                print(f"  [API] Rate limit: {core.remaining}/{core.limit} remaining, resets at {core.reset}")
+            
+            # If we're getting close to the limit (less than 100 calls remaining)
+            if core.remaining < 100:
+                wait_time = (core.reset - datetime.utcnow()).total_seconds() + 10
+                if wait_time > 0:
+                    print(f"  [API] Rate limit low ({core.remaining} remaining). Waiting {wait_time:.0f} seconds...")
+                    time.sleep(wait_time)
+                    self.backoff_time = 1  # Reset backoff
+            # If we're getting low (less than 500 calls), slow down
+            elif core.remaining < 500:
+                time.sleep(self.backoff_time)
+                self.backoff_time = min(self.backoff_time * 1.5, 10)  # Exponential backoff, max 10s
+            else:
+                self.backoff_time = 1  # Reset backoff when we have plenty of calls
+                
+            self.api_calls_made += 1
+            
+        except Exception as e:
+            print(f"  [API] Warning: Could not check rate limit: {e}")
+    
+    def api_call_with_retry(self, func, max_retries: int = 3):
+        """
+        Execute an API call with retry logic and rate limiting.
+        
+        Args:
+            func: Function to call
+            max_retries: Maximum number of retries (default: 3)
+            
+        Returns:
+            Result of the function call
+        """
+        self.check_rate_limit()
+        
+        for attempt in range(max_retries):
+            try:
+                return func()
+            except RateLimitExceededException as e:
+                if attempt < max_retries - 1:
+                    wait_time = 60 * (attempt + 1)  # Wait 60s, 120s, 180s
+                    print(f"  [API] Rate limit exceeded. Waiting {wait_time} seconds (attempt {attempt + 1}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    raise
+            except GithubException as e:
+                if attempt < max_retries - 1 and e.status in [502, 503, 504]:  # Server errors
+                    wait_time = 5 * (attempt + 1)
+                    print(f"  [API] Server error {e.status}. Retrying in {wait_time} seconds...")
+                    time.sleep(wait_time)
+                else:
+                    raise
+        
+        return None
         
     def estimate_hours_from_commits(self, commits_count: int, lines_changed: int) -> float:
         """
@@ -74,9 +148,10 @@ class GitHubAnalytics:
         }))
         
         try:
-            commits = repo.get_commits()
+            commits = self.api_call_with_retry(lambda: repo.get_commits())
             
             for commit in commits:
+                self.check_rate_limit()  # Check before processing each commit
                 try:
                     # Get commit date
                     commit_date = commit.commit.author.date
@@ -133,9 +208,10 @@ class GitHubAnalytics:
         
         try:
             # Get all pull requests (open and closed)
-            prs = repo.get_pulls(state='all')
+            prs = self.api_call_with_retry(lambda: repo.get_pulls(state='all'))
             
             for pr in prs:
+                self.check_rate_limit()  # Check before processing each PR
                 try:
                     # Created date
                     created_date = pr.created_at
@@ -188,9 +264,10 @@ class GitHubAnalytics:
         }))
         
         try:
-            issues = repo.get_issues(state='all')
+            issues = self.api_call_with_retry(lambda: repo.get_issues(state='all'))
             
             for issue in issues:
+                self.check_rate_limit()  # Check before processing each issue
                 try:
                     # Skip pull requests (they show up in issues too)
                     if issue.pull_request:
@@ -260,12 +337,13 @@ class GitHubAnalytics:
         
         try:
             # Get all commits to track file modifications
-            commits = repo.get_commits()
+            commits = self.api_call_with_retry(lambda: repo.get_commits())
             
             # Track files and their last modification per day
             file_modifications = {}
             
             for commit in commits:
+                self.check_rate_limit()  # Check before processing each commit
                 try:
                     commit_date = commit.commit.author.date
                     
@@ -321,21 +399,81 @@ class GitHubAnalytics:
         
         return merged
     
-    def analyze_all_repositories(self, start_date=None, end_date=None) -> pd.DataFrame:
+    def should_include_repository(self, repo, 
+                                  include_repos: Optional[Set[str]] = None,
+                                  exclude_repos: Optional[Set[str]] = None,
+                                  filter_by_user_contribution: Optional[str] = None) -> bool:
         """
-        Analyze all repositories for the user.
+        Determine if a repository should be included in analysis.
+        
+        Args:
+            repo: GitHub repository object
+            include_repos: Set of repository names to include (None = include all)
+            exclude_repos: Set of repository names to exclude (None = exclude none)
+            filter_by_user_contribution: Only include repos where this user has contributed
+            
+        Returns:
+            True if repository should be included, False otherwise
+        """
+        repo_name = repo.name
+        
+        # Check exclude list first
+        if exclude_repos and repo_name in exclude_repos:
+            return False
+        
+        # Check include list if specified
+        if include_repos and repo_name not in include_repos:
+            return False
+        
+        # Check user contribution filter
+        if filter_by_user_contribution:
+            try:
+                # Check if user has any commits in this repo
+                commits = self.api_call_with_retry(
+                    lambda: repo.get_commits(author=filter_by_user_contribution).get_page(0)
+                )
+                if not commits:
+                    return False
+            except Exception as e:
+                print(f"  [FILTER] Could not check contributions for {repo_name}: {e}")
+                return False
+        
+        return True
+    
+    def analyze_all_repositories(self, 
+                                 start_date=None, 
+                                 end_date=None,
+                                 include_repos: Optional[List[str]] = None,
+                                 exclude_repos: Optional[List[str]] = None,
+                                 filter_by_user_contribution: Optional[str] = None) -> pd.DataFrame:
+        """
+        Analyze all repositories for the user with filtering options.
         
         Args:
             start_date: Start date for analysis (optional)
             end_date: End date for analysis (optional)
+            include_repos: List of repository names to include (None = include all)
+            exclude_repos: List of repository names to exclude (None = exclude none)
+            filter_by_user_contribution: Only include repos where this user has contributed
             
         Returns:
             Pandas DataFrame with comprehensive statistics
         """
         print(f"Fetching repositories for user: {self.username}")
         
+        # Convert lists to sets for faster lookup
+        include_set = set(include_repos) if include_repos else None
+        exclude_set = set(exclude_repos) if exclude_repos else None
+        
+        if include_set:
+            print(f"  Including only: {', '.join(sorted(include_set))}")
+        if exclude_set:
+            print(f"  Excluding: {', '.join(sorted(exclude_set))}")
+        if filter_by_user_contribution:
+            print(f"  Filtering by contributions from: {filter_by_user_contribution}")
+        
         try:
-            repos = self.user.get_repos()
+            repos = self.api_call_with_retry(lambda: self.user.get_repos())
         except GithubException as e:
             print(f"Error fetching repositories: {e}")
             return pd.DataFrame()
@@ -343,7 +481,14 @@ class GitHubAnalytics:
         all_data = defaultdict(lambda: defaultdict(dict))
         
         repo_count = 0
+        skipped_count = 0
         for repo in repos:
+            # Check if repository should be included
+            if not self.should_include_repository(repo, include_set, exclude_set, filter_by_user_contribution):
+                skipped_count += 1
+                print(f"Skipping repository: {repo.name}")
+                continue
+                
             repo_count += 1
             print(f"Analyzing repository {repo_count}: {repo.name}")
             
@@ -375,6 +520,8 @@ class GitHubAnalytics:
                         all_data[user][date][key] += value
         
         print(f"Total repositories analyzed: {repo_count}")
+        if skipped_count > 0:
+            print(f"Total repositories skipped: {skipped_count}")
         
         # Convert to DataFrame
         rows = []
@@ -413,7 +560,13 @@ class GitHubAnalytics:
         
         return df
     
-    def generate_report(self, output_file: str = None, start_date=None, end_date=None):
+    def generate_report(self, 
+                       output_file: str = None, 
+                       start_date=None, 
+                       end_date=None,
+                       include_repos: Optional[List[str]] = None,
+                       exclude_repos: Optional[List[str]] = None,
+                       filter_by_user_contribution: Optional[str] = None):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -421,9 +574,18 @@ class GitHubAnalytics:
             output_file: Output file path (defaults to github_analytics_{timestamp}.xlsx)
             start_date: Start date for analysis (optional)
             end_date: End date for analysis (optional)
+            include_repos: List of repository names to include (None = include all)
+            exclude_repos: List of repository names to exclude (None = exclude none)
+            filter_by_user_contribution: Only include repos where this user has contributed
         """
         # Analyze all repositories
-        df = self.analyze_all_repositories(start_date, end_date)
+        df = self.analyze_all_repositories(
+            start_date, 
+            end_date, 
+            include_repos, 
+            exclude_repos, 
+            filter_by_user_contribution
+        )
         
         if df.empty:
             print("No data found to generate report.")
@@ -503,10 +665,14 @@ def main():
         print("See .env.example for reference.")
         sys.exit(1)
     
-    # Optional: Parse command line arguments for date range
+    # Optional: Parse command line arguments
     start_date = None
     end_date = None
     output_file = None
+    include_repos = None
+    exclude_repos = None
+    filter_by_user = None
+    disable_rate_limiting = False
     
     if len(sys.argv) > 1:
         # Simple command line parsing
@@ -521,6 +687,30 @@ def main():
             elif sys.argv[i] == '--output' and i + 1 < len(sys.argv):
                 output_file = sys.argv[i + 1]
                 i += 2
+            elif sys.argv[i] == '--include-repos' and i + 1 < len(sys.argv):
+                include_repos = sys.argv[i + 1].split(',')
+                i += 2
+            elif sys.argv[i] == '--exclude-repos' and i + 1 < len(sys.argv):
+                exclude_repos = sys.argv[i + 1].split(',')
+                i += 2
+            elif sys.argv[i] == '--filter-by-user' and i + 1 < len(sys.argv):
+                filter_by_user = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == '--disable-rate-limiting':
+                disable_rate_limiting = True
+                i += 1
+            elif sys.argv[i] in ['--help', '-h']:
+                print("Usage: python github_analytics.py [OPTIONS]")
+                print("\nOptions:")
+                print("  --start-date YYYY-MM-DD        Start date for analysis")
+                print("  --end-date YYYY-MM-DD          End date for analysis")
+                print("  --output FILE                  Output file path")
+                print("  --include-repos REPO1,REPO2    Only analyze these repositories")
+                print("  --exclude-repos REPO1,REPO2    Exclude these repositories")
+                print("  --filter-by-user USERNAME      Only include repos with contributions from user")
+                print("  --disable-rate-limiting        Disable automatic rate limit handling")
+                print("  --help, -h                     Show this help message")
+                sys.exit(0)
             else:
                 i += 1
     
@@ -532,14 +722,28 @@ def main():
         print(f"Start Date: {start_date.strftime('%Y-%m-%d')}")
     if end_date:
         print(f"End Date: {end_date.strftime('%Y-%m-%d')}")
+    if include_repos:
+        print(f"Including repos: {', '.join(include_repos)}")
+    if exclude_repos:
+        print(f"Excluding repos: {', '.join(exclude_repos)}")
+    if filter_by_user:
+        print(f"Filtering by user: {filter_by_user}")
+    print(f"Rate limiting: {'Disabled' if disable_rate_limiting else 'Enabled'}")
     print("=" * 60)
     print()
     
     # Create analytics instance
-    analytics = GitHubAnalytics(token, username)
+    analytics = GitHubAnalytics(token, username, enable_rate_limiting=not disable_rate_limiting)
     
     # Generate report
-    analytics.generate_report(output_file, start_date, end_date)
+    analytics.generate_report(
+        output_file, 
+        start_date, 
+        end_date,
+        include_repos,
+        exclude_repos,
+        filter_by_user
+    )
 
 
 if __name__ == '__main__':

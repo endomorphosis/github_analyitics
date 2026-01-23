@@ -5,6 +5,8 @@ A Python tool that analyzes GitHub repository activity to track commits, lines o
 ## Features
 
 - **Comprehensive Analysis**: Analyzes commits, pull requests, issues, and comments across all repositories in a user's namespace
+- **API Rate Limiting**: Automatic rate limit handling with exponential backoff to prevent hitting GitHub's 5000 calls/hour limit
+- **Repository Filtering**: Include/exclude specific repositories or filter by user contributions
 - **File Modification Tracking**: Tracks file modification timestamps to identify activity even with sparse commits
 - **Per-User Statistics**: Tracks individual contributor activity and performance
 - **Daily Breakdown**: Provides day-by-day activity metrics with estimated hours per day
@@ -62,22 +64,47 @@ This will generate an Excel file `github_analytics_YYYYMMDD_HHMMSS.xlsx` with co
 
 ### Command Line Options
 
-Analyze data for a specific date range:
-
+**Date Filtering:**
 ```bash
 python github_analytics.py --start-date 2024-01-01 --end-date 2024-12-31
 ```
 
-Specify custom output file:
+**Repository Filtering:**
+```bash
+# Only analyze specific repositories
+python github_analytics.py --include-repos repo1,repo2,repo3
 
+# Exclude specific repositories
+python github_analytics.py --exclude-repos test-repo,demo-repo
+
+# Only analyze repos where a specific user has contributed
+python github_analytics.py --filter-by-user username
+```
+
+**Output Options:**
 ```bash
 python github_analytics.py --output my_report.xlsx
 ```
 
-Combine options:
-
+**Rate Limiting:**
 ```bash
-python github_analytics.py --start-date 2024-01-01 --end-date 2024-12-31 --output q1_2024.xlsx
+# Disable automatic rate limiting (not recommended for large accounts)
+python github_analytics.py --disable-rate-limiting
+```
+
+**Combined Example:**
+```bash
+python github_analytics.py \
+  --start-date 2024-01-01 \
+  --end-date 2024-12-31 \
+  --exclude-repos test-repo,demo \
+  --filter-by-user contributor-name \
+  --output quarterly_report.xlsx
+```
+
+**Help:**
+```bash
+python github_analytics.py --help
 ```
 
 ## Output

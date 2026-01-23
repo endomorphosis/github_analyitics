@@ -36,7 +36,30 @@ python github_analytics.py
 
 # Option C: For a specific date range
 ./run_report.sh 2024-01-01 2024-12-31
+
+# Option D: Filter repositories
+python github_analytics.py --include-repos repo1,repo2
+
+# Option E: Exclude test repositories
+python github_analytics.py --exclude-repos test-repo,demo-repo
+
+# Option F: Only repos where user contributed
+python github_analytics.py --filter-by-user username
 ```
+
+## Advanced Features
+
+### API Rate Limiting
+The tool automatically handles GitHub's API rate limits (5000 calls/hour):
+- Monitors remaining API calls
+- Implements exponential backoff when approaching limits
+- Automatically waits and retries on rate limit errors
+
+### Repository Filtering
+Control which repositories to analyze:
+- `--include-repos`: Only analyze specific repositories
+- `--exclude-repos`: Skip specific repositories
+- `--filter-by-user`: Only include repos where a user has contributed
 
 ## What You'll Get
 
