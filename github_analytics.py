@@ -10,7 +10,7 @@ estimated work hours. Generates daily breakdown spreadsheets.
 import os
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 from typing import Dict, List, Tuple, Optional, Set
 import pandas as pd
@@ -50,13 +50,16 @@ class GitHubAnalytics:
             rate_limit = self.github.get_rate_limit()
             core = rate_limit.core
             
+            # Increment counter first
+            self.api_calls_made += 1
+            
             # Log rate limit status every 100 calls
             if self.api_calls_made % 100 == 0:
                 print(f"  [API] Rate limit: {core.remaining}/{core.limit} remaining, resets at {core.reset}")
             
             # If we're getting close to the limit (less than 100 calls remaining)
             if core.remaining < 100:
-                wait_time = (core.reset - datetime.utcnow()).total_seconds() + 10
+                wait_time = (core.reset - datetime.now(timezone.utc)).total_seconds() + 10
                 if wait_time > 0:
                     print(f"  [API] Rate limit low ({core.remaining} remaining). Waiting {wait_time:.0f} seconds...")
                     time.sleep(wait_time)
@@ -67,8 +70,6 @@ class GitHubAnalytics:
                 self.backoff_time = min(self.backoff_time * 1.5, 10)  # Exponential backoff, max 10s
             else:
                 self.backoff_time = 1  # Reset backoff when we have plenty of calls
-                
-            self.api_calls_made += 1
             
         except Exception as e:
             print(f"  [API] Warning: Could not check rate limit: {e}")
@@ -428,15 +429,22 @@ class GitHubAnalytics:
         # Check user contribution filter
         if filter_by_user_contribution:
             try:
-                # Check if user has any commits in this repo
-                commits = self.api_call_with_retry(
-                    lambda: repo.get_commits(author=filter_by_user_contribution).get_page(0)
-                )
-                if not commits:
+                # More efficient: Check if user is in contributors list
+                contributors = self.api_call_with_retry(lambda: repo.get_contributors())
+                contributor_logins = [c.login for c in contributors if c.login]
+                if filter_by_user_contribution not in contributor_logins:
                     return False
             except Exception as e:
-                print(f"  [FILTER] Could not check contributions for {repo_name}: {e}")
-                return False
+                # Fallback to commit check if contributors API fails
+                try:
+                    commits = self.api_call_with_retry(
+                        lambda: list(repo.get_commits(author=filter_by_user_contribution)[:1])
+                    )
+                    if not commits:
+                        return False
+                except Exception as e2:
+                    print(f"  [FILTER] Could not check contributions for {repo_name}: {e2}")
+                    return False
         
         return True
     
