@@ -5,8 +5,9 @@ A Python tool that analyzes GitHub repository activity to track commits, lines o
 ## Features
 
 - **Comprehensive Analysis**: Analyzes commits, pull requests, issues, and comments across all repositories in a user's namespace
+- **File Modification Tracking**: Tracks file modification timestamps to identify activity even with sparse commits
 - **Per-User Statistics**: Tracks individual contributor activity and performance
-- **Daily Breakdown**: Provides day-by-day activity metrics
+- **Daily Breakdown**: Provides day-by-day activity metrics with estimated hours per day
 - **Work Hour Estimation**: Calculates estimated hours based on commits and lines of code changed
 - **Excel Reports**: Generates detailed spreadsheets with multiple summary views
 
@@ -77,15 +78,17 @@ Daily breakdown per user including:
 - Number of commits
 - Lines added/deleted
 - Total lines changed
+- Files modified (tracked via commit history)
 - Pull requests created/merged
 - Issues created/closed
 - Issue comments
-- Estimated work hours
+- Estimated work hours per day
 
 ### 2. User Summary
 Aggregated statistics per user:
 - Total commits
 - Total lines changed
+- Total files modified
 - Total PRs and issues
 - Total estimated hours
 - Sorted by estimated hours (highest to lowest)
@@ -93,6 +96,7 @@ Aggregated statistics per user:
 ### 3. Daily Summary
 Aggregated statistics per day:
 - Total activity across all users
+- Total estimated hours per day
 - Number of active users
 - Daily trends in commits, PRs, and issues
 
@@ -102,11 +106,17 @@ Aggregated statistics per day:
 - Counts both additions and deletions from commits and pull requests
 - Provides insight into code volume and refactoring activity
 
+### Files Modified
+- Tracks unique files changed per day via commit history
+- Helps identify activity patterns even when commits are sparse
+- Useful for understanding which files are actively being worked on
+
 ### Estimated Hours
 Calculated using a heuristic formula:
 - Base: 0.5 hours per commit (for planning, testing, reviewing)
 - Coding time: Lines changed / 30 (assuming ~30 lines per hour)
 - Formula: `hours = (commits × 0.5) + (lines_changed / 30)`
+- Aggregated per day in the Daily Summary sheet
 
 This provides a rough estimate of development effort. Actual hours may vary based on code complexity.
 

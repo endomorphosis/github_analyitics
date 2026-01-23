@@ -70,17 +70,19 @@ Daily breakdown per user with:
 - **Lines Added**: Lines of code added
 - **Lines Deleted**: Lines of code deleted
 - **Total Lines Changed**: Sum of additions and deletions
+- **Files Modified**: Unique files changed (tracks activity even with sparse commits)
 - **PRs Created**: Pull requests opened
 - **PRs Merged**: Pull requests merged
 - **Issues Created**: New issues opened
 - **Issues Closed**: Issues resolved
 - **Issue Comments**: Comments on issues
-- **Estimated Hours**: Calculated work hours
+- **Estimated Hours**: Calculated work hours per day
 
 ### Sheet 2: User Summary
 
 Totals per contributor:
 - All metrics aggregated by user
+- Includes total files modified
 - Sorted by estimated hours (highest to lowest)
 - Useful for identifying top contributors
 
@@ -88,6 +90,7 @@ Totals per contributor:
 
 Totals per day:
 - All metrics aggregated by date
+- **Estimated Hours**: Total hours worked per day across all users
 - **Active Users**: Number of unique contributors per day
 - Useful for tracking team velocity and activity trends
 
@@ -129,9 +132,10 @@ This heuristic assumes:
 
 The tool analyzes:
 1. **Commit History**: All commits across all repositories
-2. **Pull Requests**: Open, closed, and merged PRs
-3. **Issues**: Open and closed issues with comments
-4. **Statistics**: Line changes from commit stats
+2. **File Modifications**: Tracks when files were changed via commit timestamps (helps identify activity even with sparse commits)
+3. **Pull Requests**: Open, closed, and merged PRs
+4. **Issues**: Open and closed issues with comments
+5. **Statistics**: Line changes from commit stats
 
 ## Privacy & Security
 

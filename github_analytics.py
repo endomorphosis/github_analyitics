@@ -239,6 +239,70 @@ class GitHubAnalytics:
             
         return data
     
+    def analyze_file_modifications(self, repo, start_date=None, end_date=None) -> Dict:
+        """
+        Analyze file modification timestamps in a repository.
+        
+        This helps identify activity even when commits are sparse by looking at
+        when files were last modified. Useful for catching uncommitted work or
+        understanding file activity patterns.
+        
+        Args:
+            repo: GitHub repository object
+            start_date: Start date for analysis (optional)
+            end_date: End date for analysis (optional)
+            
+        Returns:
+            Dictionary with per-user, per-day file modification statistics
+        """
+        data = defaultdict(lambda: defaultdict(lambda: {
+            'files_modified': 0,
+            'modification_activity': 0
+        }))
+        
+        try:
+            # Get all commits to track file modifications
+            commits = repo.get_commits()
+            
+            # Track files and their last modification per day
+            file_modifications = {}
+            
+            for commit in commits:
+                try:
+                    commit_date = commit.commit.author.date
+                    
+                    # Filter by date range if specified
+                    if start_date and commit_date < start_date:
+                        continue
+                    if end_date and commit_date > end_date:
+                        continue
+                    
+                    author = commit.author.login if commit.author else commit.commit.author.name
+                    date_key = commit_date.strftime('%Y-%m-%d')
+                    
+                    # Get files modified in this commit
+                    try:
+                        files = commit.files
+                        for file in files:
+                            file_path = file.filename
+                            
+                            # Track this file modification
+                            file_key = f"{file_path}:{date_key}"
+                            if file_key not in file_modifications:
+                                data[author][date_key]['files_modified'] += 1
+                                data[author][date_key]['modification_activity'] += 1
+                                file_modifications[file_key] = True
+                    except Exception:
+                        pass  # Some commits may not have file details
+                        
+                except Exception as e:
+                    continue
+                    
+        except GithubException as e:
+            print(f"Warning: Error analyzing file modifications for {repo.name}: {e}")
+            
+        return data
+    
     def merge_data(self, *data_dicts) -> Dict:
         """
         Merge multiple data dictionaries.
@@ -298,8 +362,12 @@ class GitHubAnalytics:
             print(f"  - Analyzing issues...")
             issue_data = self.analyze_issues(repo, start_date, end_date)
             
+            # Analyze file modifications
+            print(f"  - Analyzing file modifications...")
+            file_mod_data = self.analyze_file_modifications(repo, start_date, end_date)
+            
             # Merge data for this repository
-            repo_data = self.merge_data(commit_data, pr_data, issue_data)
+            repo_data = self.merge_data(commit_data, pr_data, issue_data, file_mod_data)
             
             # Add to overall data
             for user, dates in repo_data.items():
@@ -331,6 +399,7 @@ class GitHubAnalytics:
                     'lines_added': stats.get('additions', 0) + stats.get('pr_additions', 0),
                     'lines_deleted': stats.get('deletions', 0) + stats.get('pr_deletions', 0),
                     'total_lines_changed': total_changes,
+                    'files_modified': stats.get('files_modified', 0),
                     'prs_created': stats.get('prs_created', 0),
                     'prs_merged': stats.get('prs_merged', 0),
                     'issues_created': stats.get('issues_created', 0),
@@ -379,6 +448,7 @@ class GitHubAnalytics:
                 'lines_added': 'sum',
                 'lines_deleted': 'sum',
                 'total_lines_changed': 'sum',
+                'files_modified': 'sum',
                 'prs_created': 'sum',
                 'prs_merged': 'sum',
                 'issues_created': 'sum',
@@ -395,6 +465,7 @@ class GitHubAnalytics:
                 'lines_added': 'sum',
                 'lines_deleted': 'sum',
                 'total_lines_changed': 'sum',
+                'files_modified': 'sum',
                 'prs_created': 'sum',
                 'prs_merged': 'sum',
                 'issues_created': 'sum',
