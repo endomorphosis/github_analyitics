@@ -144,6 +144,11 @@ ENV/
 env.bak/
 venv.bak/
 
+# Generated reports
+github_analytics_*.xlsx
+*.xlsx
+*.csv
+
 # Spyder project settings
 .spyderproject
 .spyproject
