@@ -442,13 +442,19 @@ def main():
     
     if len(sys.argv) > 1:
         # Simple command line parsing
-        for i, arg in enumerate(sys.argv[1:]):
-            if arg == '--start-date' and i + 2 < len(sys.argv):
-                start_date = datetime.strptime(sys.argv[i + 2], '%Y-%m-%d')
-            elif arg == '--end-date' and i + 2 < len(sys.argv):
-                end_date = datetime.strptime(sys.argv[i + 2], '%Y-%m-%d')
-            elif arg == '--output' and i + 2 < len(sys.argv):
-                output_file = sys.argv[i + 2]
+        i = 1
+        while i < len(sys.argv):
+            if sys.argv[i] == '--start-date' and i + 1 < len(sys.argv):
+                start_date = datetime.strptime(sys.argv[i + 1], '%Y-%m-%d')
+                i += 2
+            elif sys.argv[i] == '--end-date' and i + 1 < len(sys.argv):
+                end_date = datetime.strptime(sys.argv[i + 1], '%Y-%m-%d')
+                i += 2
+            elif sys.argv[i] == '--output' and i + 1 < len(sys.argv):
+                output_file = sys.argv[i + 1]
+                i += 2
+            else:
+                i += 1
     
     print("=" * 60)
     print("GitHub Analytics Tool")
