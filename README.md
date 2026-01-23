@@ -38,6 +38,18 @@ cp .env.example .env
 
 ## Usage
 
+### Quick Start Script
+
+For convenience, use the provided script:
+
+```bash
+# Run for all time
+./run_report.sh
+
+# Run for a specific date range
+./run_report.sh 2024-01-01 2024-12-31
+```
+
 ### Basic Usage
 
 Run the tool with default settings (analyzes all repositories for the configured user):
