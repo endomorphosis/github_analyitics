@@ -203,10 +203,10 @@ class LocalGitAnalytics:
         
         return commits
     
-    def analyze_repository(self, repo_path: Path, start_date: Optional[datetime] = None,
-                          end_date: Optional[datetime] = None) -> Dict:
+    def get_file_modifications(self, repo_path: Path, start_date: Optional[datetime] = None,
+                               end_date: Optional[datetime] = None) -> List[Dict]:
         """
-        Analyze a single git repository.
+        Get detailed file modification data from repository commits.
         
         Args:
             repo_path: Path to the git repository
@@ -214,18 +214,162 @@ class LocalGitAnalytics:
             end_date: End date for filtering
             
         Returns:
-            Dictionary with per-user, per-day statistics
+            List of file modification events with timestamps
+        """
+        cmd = [
+            'git', 'log',
+            '--all',
+            '--pretty=format:%H|%an|%ae|%aI',
+            '--name-status',  # Show file status (M=modified, A=added, D=deleted)
+        ]
+        
+        if start_date:
+            cmd.append(f'--since={start_date.isoformat()}')
+        if end_date:
+            cmd.append(f'--until={end_date.isoformat()}')
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            modifications = []
+            lines = result.stdout.split('\n')
+            
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                
+                if not line:
+                    i += 1
+                    continue
+                
+                # Check for commit line
+                if '|' in line:
+                    parts = line.split('|')
+                    if len(parts) >= 4:
+                        commit_hash = parts[0]
+                        author = parts[1]
+                        email = parts[2]
+                        date_str = parts[3]
+                        
+                        try:
+                            commit_date = datetime.fromisoformat(date_str)
+                        except ValueError:
+                            i += 1
+                            continue
+                        
+                        # Parse file status lines
+                        i += 1
+                        while i < len(lines):
+                            file_line = lines[i].strip()
+                            if not file_line or '|' in file_line:
+                                break
+                            
+                            # Format: M\tfilename or A\tfilename or D\tfilename
+                            if '\t' in file_line:
+                                parts = file_line.split('\t')
+                                if len(parts) >= 2:
+                                    status = parts[0]
+                                    filename = parts[1]
+                                    
+                                    modifications.append({
+                                        'commit': commit_hash,
+                                        'author': author,
+                                        'email': email,
+                                        'date': commit_date,
+                                        'status': status,
+                                        'file': filename
+                                    })
+                            
+                            i += 1
+                        continue
+                
+                i += 1
+            
+            return modifications
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Error reading file modifications from {repo_path.name}: {e}")
+            return []
+    
+    def estimate_hours_from_sessions(self, commits: List[Dict]) -> float:
+        """
+        Estimate work hours based on commit session clustering.
+        
+        Groups commits that are close together (within 2 hours) as the same work session.
+        
+        Args:
+            commits: List of commit dictionaries with 'date' field
+            
+        Returns:
+            Estimated hours based on work sessions
+        """
+        if not commits:
+            return 0.0
+        
+        # Sort commits by date
+        sorted_commits = sorted(commits, key=lambda c: c['date'])
+        
+        # Cluster commits into sessions (commits within 2 hours are same session)
+        session_gap_hours = 2
+        sessions = []
+        current_session_start = sorted_commits[0]['date']
+        current_session_end = sorted_commits[0]['date']
+        
+        for commit in sorted_commits[1:]:
+            time_diff = (commit['date'] - current_session_end).total_seconds() / 3600
+            
+            if time_diff <= session_gap_hours:
+                # Same session - extend end time
+                current_session_end = commit['date']
+            else:
+                # New session
+                session_duration = (current_session_end - current_session_start).total_seconds() / 3600
+                # Minimum 0.5 hours per session, maximum 8 hours
+                sessions.append(min(max(session_duration + 0.5, 0.5), 8.0))
+                
+                current_session_start = commit['date']
+                current_session_end = commit['date']
+        
+        # Add final session
+        session_duration = (current_session_end - current_session_start).total_seconds() / 3600
+        sessions.append(min(max(session_duration + 0.5, 0.5), 8.0))
+        
+        return round(sum(sessions), 2)
+    
+    def analyze_repository(self, repo_path: Path, start_date: Optional[datetime] = None,
+                          end_date: Optional[datetime] = None, 
+                          use_session_estimation: bool = False) -> Dict:
+        """
+        Analyze a single git repository.
+        
+        Args:
+            repo_path: Path to the git repository
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            use_session_estimation: Use session-based hour estimation instead of simple formula
+            
+        Returns:
+            Dictionary with per-user, per-day statistics including file modifications
         """
         data = defaultdict(lambda: defaultdict(lambda: {
             'commits': 0,
             'additions': 0,
             'deletions': 0,
             'total_changes': 0,
-            'files_modified': set()
+            'files_modified': set(),
+            'commit_times': []
         }))
         
         commits = self.get_git_log(repo_path, start_date, end_date)
+        modifications = self.get_file_modifications(repo_path, start_date, end_date)
         
+        # Track commits
         for commit in commits:
             author = commit['author']
             date_key = commit['date'].strftime('%Y-%m-%d')
@@ -234,12 +378,29 @@ class LocalGitAnalytics:
             data[author][date_key]['additions'] += commit['additions']
             data[author][date_key]['deletions'] += commit['deletions']
             data[author][date_key]['total_changes'] += commit['additions'] + commit['deletions']
-            data[author][date_key]['files_modified'].add(commit['hash'])  # Track unique commits
+            data[author][date_key]['commit_times'].append({'date': commit['date']})
         
-        # Convert sets to counts
+        # Track file modifications
+        for mod in modifications:
+            author = mod['author']
+            date_key = mod['date'].strftime('%Y-%m-%d')
+            
+            # Track unique files modified
+            data[author][date_key]['files_modified'].add(mod['file'])
+        
+        # Convert sets to counts and calculate session-based hours if requested
         for author in data:
             for date in data[author]:
                 data[author][date]['files_modified'] = len(data[author][date]['files_modified'])
+                
+                if use_session_estimation:
+                    # Use session-based estimation
+                    data[author][date]['session_hours'] = self.estimate_hours_from_sessions(
+                        data[author][date]['commit_times']
+                    )
+                
+                # Remove commit_times as it's no longer needed
+                del data[author][date]['commit_times']
         
         return data
     
@@ -277,7 +438,8 @@ class LocalGitAnalytics:
                                  end_date: Optional[datetime] = None,
                                  include_repos: Optional[List[str]] = None,
                                  exclude_repos: Optional[List[str]] = None,
-                                 max_depth: int = 5) -> pd.DataFrame:
+                                 max_depth: int = 5,
+                                 use_session_estimation: bool = False) -> pd.DataFrame:
         """
         Analyze all git repositories found under the base path.
         
@@ -287,6 +449,7 @@ class LocalGitAnalytics:
             include_repos: List of repository names to include
             exclude_repos: List of repository names to exclude
             max_depth: Maximum directory depth to search
+            use_session_estimation: Use session clustering for hour estimation
             
         Returns:
             Pandas DataFrame with comprehensive statistics
@@ -320,7 +483,7 @@ class LocalGitAnalytics:
             print(f"[{idx}/{len(filtered_repos)}] Analyzing: {repo.name}")
             
             try:
-                repo_data = self.analyze_repository(repo, start_date, end_date)
+                repo_data = self.analyze_repository(repo, start_date, end_date, use_session_estimation)
                 
                 # Merge into all_data
                 for user, dates in repo_data.items():
@@ -340,7 +503,12 @@ class LocalGitAnalytics:
             for date, stats in dates.items():
                 total_changes = stats.get('total_changes', 0)
                 commits_count = stats.get('commits', 0)
-                estimated_hours = self.estimate_hours_from_commits(commits_count, total_changes)
+                
+                # Use session-based hours if available, otherwise use simple formula
+                if use_session_estimation and 'session_hours' in stats:
+                    estimated_hours = stats.get('session_hours', 0)
+                else:
+                    estimated_hours = self.estimate_hours_from_commits(commits_count, total_changes)
                 
                 row = {
                     'date': date,
@@ -367,7 +535,8 @@ class LocalGitAnalytics:
                        end_date: Optional[datetime] = None,
                        include_repos: Optional[List[str]] = None,
                        exclude_repos: Optional[List[str]] = None,
-                       max_depth: int = 5):
+                       max_depth: int = 5,
+                       use_session_estimation: bool = False):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -378,6 +547,7 @@ class LocalGitAnalytics:
             include_repos: List of repository names to include
             exclude_repos: List of repository names to exclude
             max_depth: Maximum directory depth to search
+            use_session_estimation: Use session clustering for hour estimation
         """
         # Analyze all repositories
         df = self.analyze_all_repositories(
@@ -385,7 +555,8 @@ class LocalGitAnalytics:
             end_date,
             include_repos,
             exclude_repos,
-            max_depth
+            max_depth,
+            use_session_estimation
         )
         
         if df.empty:
@@ -482,6 +653,11 @@ def main():
         default=5,
         help='Maximum directory depth to search for repositories (default: 5)'
     )
+    parser.add_argument(
+        '--use-sessions',
+        action='store_true',
+        help='Use session-based hour estimation (groups commits by time)'
+    )
     
     args = parser.parse_args()
     
@@ -514,6 +690,10 @@ def main():
     if exclude_repos:
         print(f"Excluding repos: {', '.join(exclude_repos)}")
     print(f"Max search depth: {args.max_depth}")
+    if args.use_sessions:
+        print(f"Hour estimation: Session-based (clusters commits by time)")
+    else:
+        print(f"Hour estimation: Simple formula (commits + lines changed)")
     print("=" * 60)
     print()
     
@@ -527,7 +707,8 @@ def main():
         end_date,
         include_repos,
         exclude_repos,
-        args.max_depth
+        args.max_depth,
+        args.use_sessions
     )
 
 
