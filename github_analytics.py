@@ -453,7 +453,8 @@ class GitHubAnalytics:
                                  end_date=None,
                                  include_repos: Optional[List[str]] = None,
                                  exclude_repos: Optional[List[str]] = None,
-                                 filter_by_user_contribution: Optional[str] = None) -> pd.DataFrame:
+                                 filter_by_user_contribution: Optional[str] = None,
+                                 skip_file_modifications: bool = False) -> pd.DataFrame:
         """
         Analyze all repositories for the user with filtering options.
         
@@ -463,6 +464,7 @@ class GitHubAnalytics:
             include_repos: List of repository names to include (None = include all)
             exclude_repos: List of repository names to exclude (None = exclude none)
             filter_by_user_contribution: Only include repos where this user has contributed
+            skip_file_modifications: Skip file modification analysis (faster)
             
         Returns:
             Pandas DataFrame with comprehensive statistics
@@ -513,8 +515,12 @@ class GitHubAnalytics:
             issue_data = self.analyze_issues(repo, start_date, end_date)
             
             # Analyze file modifications
-            print(f"  - Analyzing file modifications...")
-            file_mod_data = self.analyze_file_modifications(repo, start_date, end_date)
+            if skip_file_modifications:
+                print(f"  - Skipping file modifications...")
+                file_mod_data = {}
+            else:
+                print(f"  - Analyzing file modifications...")
+                file_mod_data = self.analyze_file_modifications(repo, start_date, end_date)
             
             # Merge data for this repository
             repo_data = self.merge_data(commit_data, pr_data, issue_data, file_mod_data)
@@ -574,7 +580,8 @@ class GitHubAnalytics:
                        end_date=None,
                        include_repos: Optional[List[str]] = None,
                        exclude_repos: Optional[List[str]] = None,
-                       filter_by_user_contribution: Optional[str] = None):
+                       filter_by_user_contribution: Optional[str] = None,
+                       skip_file_modifications: bool = False):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -585,6 +592,7 @@ class GitHubAnalytics:
             include_repos: List of repository names to include (None = include all)
             exclude_repos: List of repository names to exclude (None = exclude none)
             filter_by_user_contribution: Only include repos where this user has contributed
+            skip_file_modifications: Skip file modification analysis (faster)
         """
         # Analyze all repositories
         df = self.analyze_all_repositories(
@@ -592,7 +600,8 @@ class GitHubAnalytics:
             end_date, 
             include_repos, 
             exclude_repos, 
-            filter_by_user_contribution
+            filter_by_user_contribution,
+            skip_file_modifications
         )
         
         if df.empty:
@@ -680,6 +689,7 @@ def main():
     include_repos = None
     exclude_repos = None
     filter_by_user = None
+    skip_file_modifications = False
     disable_rate_limiting = False
     
     if len(sys.argv) > 1:
@@ -707,6 +717,9 @@ def main():
             elif sys.argv[i] == '--disable-rate-limiting':
                 disable_rate_limiting = True
                 i += 1
+            elif sys.argv[i] == '--skip-file-modifications':
+                skip_file_modifications = True
+                i += 1
             elif sys.argv[i] in ['--help', '-h']:
                 print("Usage: python github_analytics.py [OPTIONS]")
                 print("\nOptions:")
@@ -717,6 +730,7 @@ def main():
                 print("  --exclude-repos REPO1,REPO2    Exclude these repositories")
                 print("  --filter-by-user USERNAME      Only include repos with contributions from user")
                 print("  --disable-rate-limiting        Disable automatic rate limit handling")
+                print("  --skip-file-modifications      Skip file modification analysis (faster)")
                 print("  --help, -h                     Show this help message")
                 sys.exit(0)
             else:
@@ -750,7 +764,8 @@ def main():
         end_date,
         include_repos,
         exclude_repos,
-        filter_by_user
+        filter_by_user,
+        skip_file_modifications
     )
 
 
