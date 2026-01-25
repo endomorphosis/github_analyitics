@@ -27,7 +27,7 @@ def main() -> None:
 
     output_file = os.path.join(os.getcwd(), "github_analytics_latest.xlsx")
 
-    analytics = GitHubAnalytics(token, username, enable_rate_limiting=False)
+    analytics = GitHubAnalytics(token, username, enable_rate_limiting=True)
     analytics.generate_report(
         output_file=output_file,
         start_date=start_date,

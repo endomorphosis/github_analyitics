@@ -36,6 +36,7 @@ class GitHubAnalytics:
         self.enable_rate_limiting = enable_rate_limiting
         self.api_calls_made = 0
         self.backoff_time = 1  # Initial backoff time in seconds
+        self.last_rate_limit_check = 0.0
 
     @staticmethod
     def normalize_datetime(dt: Optional[datetime]) -> Optional[datetime]:
@@ -54,10 +55,23 @@ class GitHubAnalytics:
         """
         if not self.enable_rate_limiting:
             return
+
+        # Avoid calling the rate_limit endpoint too frequently
+        now_ts = time.time()
+        if now_ts - self.last_rate_limit_check < 30:
+            # Lightweight backoff if we're already throttling
+            if self.backoff_time > 1:
+                time.sleep(min(self.backoff_time, 2))
+            return
             
         try:
             rate_limit = self.github.get_rate_limit()
-            core = rate_limit.core
+            self.last_rate_limit_check = time.time()
+            core = getattr(rate_limit, 'core', None)
+            if core is None and hasattr(rate_limit, 'resources'):
+                core = getattr(rate_limit.resources, 'core', None)
+            if core is None:
+                raise AttributeError("Rate limit core not available")
             
             # Increment counter first
             self.api_calls_made += 1
@@ -82,6 +96,9 @@ class GitHubAnalytics:
             
         except Exception as e:
             print(f"  [API] Warning: Could not check rate limit: {e}")
+            # Conservative backoff when rate limit cannot be checked
+            time.sleep(min(self.backoff_time, 5))
+            self.backoff_time = min(self.backoff_time * 1.5, 10)
     
     def api_call_with_retry(self, func, max_retries: int = 3):
         """
@@ -163,8 +180,11 @@ class GitHubAnalytics:
         try:
             commits = self.api_call_with_retry(lambda: repo.get_commits())
             
+            commit_index = 0
             for commit in commits:
-                self.check_rate_limit()  # Check before processing each commit
+                commit_index += 1
+                if commit_index % 25 == 0:
+                    self.check_rate_limit()  # Check periodically
                 try:
                     # Get commit date
                     commit_date = self.normalize_datetime(commit.commit.author.date)
@@ -227,8 +247,11 @@ class GitHubAnalytics:
             # Get all pull requests (open and closed)
             prs = self.api_call_with_retry(lambda: repo.get_pulls(state='all'))
             
+            pr_index = 0
             for pr in prs:
-                self.check_rate_limit()  # Check before processing each PR
+                pr_index += 1
+                if pr_index % 10 == 0:
+                    self.check_rate_limit()  # Check periodically
                 try:
                     # Created date
                     created_date = self.normalize_datetime(pr.created_at)
@@ -286,8 +309,11 @@ class GitHubAnalytics:
         try:
             issues = self.api_call_with_retry(lambda: repo.get_issues(state='all'))
             
+            issue_index = 0
             for issue in issues:
-                self.check_rate_limit()  # Check before processing each issue
+                issue_index += 1
+                if issue_index % 10 == 0:
+                    self.check_rate_limit()  # Check periodically
                 try:
                     # Skip pull requests (they show up in issues too)
                     if issue.pull_request:
@@ -365,8 +391,11 @@ class GitHubAnalytics:
             # Track files and their last modification per day
             file_modifications = {}
             
+            commit_index = 0
             for commit in commits:
-                self.check_rate_limit()  # Check before processing each commit
+                commit_index += 1
+                if commit_index % 25 == 0:
+                    self.check_rate_limit()  # Check periodically
                 try:
                     commit_date = self.normalize_datetime(commit.commit.author.date)
                     
