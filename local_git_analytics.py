@@ -1,0 +1,535 @@
+#!/usr/bin/env python3
+"""
+Local Git Analytics Tool
+
+Analyzes local git repositories to track commits and estimated work hours
+by directly reading git history without using the GitHub API.
+"""
+
+import os
+import sys
+import subprocess
+from datetime import datetime, timezone
+from collections import defaultdict
+from pathlib import Path
+from typing import Dict, List, Optional, Set
+import pandas as pd
+
+
+class LocalGitAnalytics:
+    """Analyzes local git repositories without using the GitHub API."""
+    
+    def __init__(self, base_path: str):
+        """
+        Initialize Local Git Analytics.
+        
+        Args:
+            base_path: Base directory to search for git repositories
+        """
+        self.base_path = Path(base_path).resolve()
+        
+    @staticmethod
+    def estimate_hours_from_commits(commits_count: int, lines_changed: int) -> float:
+        """
+        Estimate work hours based on commits and lines of code.
+        
+        Uses heuristic: ~30 lines per hour for code changes, 
+        plus 0.5 hours per commit for planning/testing.
+        
+        Args:
+            commits_count: Number of commits
+            lines_changed: Total lines added + deleted
+            
+        Returns:
+            Estimated hours of work
+        """
+        base_hours = commits_count * 0.5
+        coding_hours = lines_changed / 30.0
+        return round(base_hours + coding_hours, 2)
+    
+    def find_git_repositories(self, max_depth: int = 5) -> List[Path]:
+        """
+        Find all git repositories under the base path.
+        
+        Args:
+            max_depth: Maximum directory depth to search
+            
+        Returns:
+            List of paths to git repositories
+        """
+        repos = []
+        
+        def search_dir(path: Path, depth: int):
+            if depth > max_depth:
+                return
+            
+            try:
+                # Check if this directory is a git repo
+                git_dir = path / '.git'
+                if git_dir.exists() and git_dir.is_dir():
+                    repos.append(path)
+                    return  # Don't search inside git repos
+                
+                # Search subdirectories
+                if path.is_dir():
+                    for item in path.iterdir():
+                        if item.is_dir() and not item.name.startswith('.'):
+                            search_dir(item, depth + 1)
+            except (PermissionError, OSError):
+                pass  # Skip directories we can't access
+        
+        print(f"Scanning for git repositories in: {self.base_path}")
+        search_dir(self.base_path, 0)
+        print(f"Found {len(repos)} git repositories")
+        
+        return repos
+    
+    def get_git_log(self, repo_path: Path, start_date: Optional[datetime] = None, 
+                    end_date: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get git log data from a repository.
+        
+        Args:
+            repo_path: Path to the git repository
+            start_date: Start date for filtering commits
+            end_date: End date for filtering commits
+            
+        Returns:
+            List of commit data dictionaries
+        """
+        # Build git log command with custom format
+        # Format: commit_hash|author_name|author_email|date_iso|subject
+        cmd = [
+            'git', 'log',
+            '--all',  # All branches
+            '--pretty=format:%H|%an|%ae|%aI|%s',
+            '--numstat',  # Show file statistics
+        ]
+        
+        # Add date filters if specified
+        if start_date:
+            cmd.append(f'--since={start_date.isoformat()}')
+        if end_date:
+            cmd.append(f'--until={end_date.isoformat()}')
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            return self.parse_git_log(result.stdout)
+            
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Error reading git log from {repo_path.name}: {e}")
+            return []
+    
+    def parse_git_log(self, log_output: str) -> List[Dict]:
+        """
+        Parse git log output with numstat.
+        
+        Args:
+            log_output: Raw git log output
+            
+        Returns:
+            List of parsed commit dictionaries
+        """
+        commits = []
+        lines = log_output.split('\n')
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            if not line:
+                i += 1
+                continue
+            
+            # Check if this is a commit line (contains |)
+            if '|' in line and not '\t' in line:
+                parts = line.split('|')
+                if len(parts) >= 5:
+                    commit_hash = parts[0]
+                    author_name = parts[1]
+                    author_email = parts[2]
+                    date_str = parts[3]
+                    subject = '|'.join(parts[4:])  # Rejoin in case subject had |
+                    
+                    # Parse date
+                    try:
+                        commit_date = datetime.fromisoformat(date_str)
+                    except ValueError:
+                        i += 1
+                        continue
+                    
+                    # Initialize commit data
+                    commit_data = {
+                        'hash': commit_hash,
+                        'author': author_name,
+                        'email': author_email,
+                        'date': commit_date,
+                        'subject': subject,
+                        'additions': 0,
+                        'deletions': 0,
+                        'files_changed': 0
+                    }
+                    
+                    # Parse numstat lines (format: additions\tdeletions\tfilename)
+                    i += 1
+                    while i < len(lines):
+                        stat_line = lines[i]
+                        if not stat_line or not '\t' in stat_line:
+                            break
+                        
+                        parts = stat_line.split('\t')
+                        if len(parts) >= 3:
+                            try:
+                                adds = int(parts[0]) if parts[0] != '-' else 0
+                                dels = int(parts[1]) if parts[1] != '-' else 0
+                                commit_data['additions'] += adds
+                                commit_data['deletions'] += dels
+                                commit_data['files_changed'] += 1
+                            except ValueError:
+                                pass
+                        i += 1
+                    
+                    commits.append(commit_data)
+                    continue
+            
+            i += 1
+        
+        return commits
+    
+    def analyze_repository(self, repo_path: Path, start_date: Optional[datetime] = None,
+                          end_date: Optional[datetime] = None) -> Dict:
+        """
+        Analyze a single git repository.
+        
+        Args:
+            repo_path: Path to the git repository
+            start_date: Start date for filtering
+            end_date: End date for filtering
+            
+        Returns:
+            Dictionary with per-user, per-day statistics
+        """
+        data = defaultdict(lambda: defaultdict(lambda: {
+            'commits': 0,
+            'additions': 0,
+            'deletions': 0,
+            'total_changes': 0,
+            'files_modified': set()
+        }))
+        
+        commits = self.get_git_log(repo_path, start_date, end_date)
+        
+        for commit in commits:
+            author = commit['author']
+            date_key = commit['date'].strftime('%Y-%m-%d')
+            
+            data[author][date_key]['commits'] += 1
+            data[author][date_key]['additions'] += commit['additions']
+            data[author][date_key]['deletions'] += commit['deletions']
+            data[author][date_key]['total_changes'] += commit['additions'] + commit['deletions']
+            data[author][date_key]['files_modified'].add(commit['hash'])  # Track unique commits
+        
+        # Convert sets to counts
+        for author in data:
+            for date in data[author]:
+                data[author][date]['files_modified'] = len(data[author][date]['files_modified'])
+        
+        return data
+    
+    def merge_data(self, *data_dicts) -> Dict:
+        """
+        Merge multiple data dictionaries.
+        
+        Args:
+            *data_dicts: Variable number of data dictionaries to merge
+            
+        Returns:
+            Merged dictionary with combined statistics
+        """
+        merged = defaultdict(lambda: defaultdict(lambda: {
+            'commits': 0,
+            'additions': 0,
+            'deletions': 0,
+            'total_changes': 0,
+            'files_modified': 0
+        }))
+        
+        for data in data_dicts:
+            for user, dates in data.items():
+                for date, stats in dates.items():
+                    merged[user][date]['commits'] += stats.get('commits', 0)
+                    merged[user][date]['additions'] += stats.get('additions', 0)
+                    merged[user][date]['deletions'] += stats.get('deletions', 0)
+                    merged[user][date]['total_changes'] += stats.get('total_changes', 0)
+                    merged[user][date]['files_modified'] += stats.get('files_modified', 0)
+        
+        return merged
+    
+    def analyze_all_repositories(self, 
+                                 start_date: Optional[datetime] = None,
+                                 end_date: Optional[datetime] = None,
+                                 include_repos: Optional[List[str]] = None,
+                                 exclude_repos: Optional[List[str]] = None,
+                                 max_depth: int = 5) -> pd.DataFrame:
+        """
+        Analyze all git repositories found under the base path.
+        
+        Args:
+            start_date: Start date for analysis
+            end_date: End date for analysis
+            include_repos: List of repository names to include
+            exclude_repos: List of repository names to exclude
+            max_depth: Maximum directory depth to search
+            
+        Returns:
+            Pandas DataFrame with comprehensive statistics
+        """
+        # Find all repositories
+        repos = self.find_git_repositories(max_depth)
+        
+        # Filter repositories
+        include_set = set(include_repos) if include_repos else None
+        exclude_set = set(exclude_repos) if exclude_repos else None
+        
+        filtered_repos = []
+        for repo in repos:
+            repo_name = repo.name
+            
+            if exclude_set and repo_name in exclude_set:
+                print(f"Skipping excluded repository: {repo_name}")
+                continue
+            
+            if include_set and repo_name not in include_set:
+                continue
+            
+            filtered_repos.append(repo)
+        
+        print(f"Analyzing {len(filtered_repos)} repositories...")
+        
+        # Analyze each repository
+        all_data = defaultdict(lambda: defaultdict(dict))
+        
+        for idx, repo in enumerate(filtered_repos, 1):
+            print(f"[{idx}/{len(filtered_repos)}] Analyzing: {repo.name}")
+            
+            try:
+                repo_data = self.analyze_repository(repo, start_date, end_date)
+                
+                # Merge into all_data
+                for user, dates in repo_data.items():
+                    for date, stats in dates.items():
+                        if date not in all_data[user]:
+                            all_data[user][date] = defaultdict(int)
+                        for key, value in stats.items():
+                            all_data[user][date][key] += value
+                
+            except Exception as e:
+                print(f"  Error: {e}")
+                continue
+        
+        # Convert to DataFrame
+        rows = []
+        for user, dates in all_data.items():
+            for date, stats in dates.items():
+                total_changes = stats.get('total_changes', 0)
+                commits_count = stats.get('commits', 0)
+                estimated_hours = self.estimate_hours_from_commits(commits_count, total_changes)
+                
+                row = {
+                    'date': date,
+                    'user': user,
+                    'commits': commits_count,
+                    'lines_added': stats.get('additions', 0),
+                    'lines_deleted': stats.get('deletions', 0),
+                    'total_lines_changed': total_changes,
+                    'files_modified': stats.get('files_modified', 0),
+                    'estimated_hours': estimated_hours
+                }
+                rows.append(row)
+        
+        # Create DataFrame and sort
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(['date', 'user'], ascending=[False, True])
+        
+        return df
+    
+    def generate_report(self,
+                       output_file: Optional[str] = None,
+                       start_date: Optional[datetime] = None,
+                       end_date: Optional[datetime] = None,
+                       include_repos: Optional[List[str]] = None,
+                       exclude_repos: Optional[List[str]] = None,
+                       max_depth: int = 5):
+        """
+        Generate a comprehensive report and save to Excel.
+        
+        Args:
+            output_file: Output file path (defaults to local_git_analytics_{timestamp}.xlsx)
+            start_date: Start date for analysis
+            end_date: End date for analysis
+            include_repos: List of repository names to include
+            exclude_repos: List of repository names to exclude
+            max_depth: Maximum directory depth to search
+        """
+        # Analyze all repositories
+        df = self.analyze_all_repositories(
+            start_date,
+            end_date,
+            include_repos,
+            exclude_repos,
+            max_depth
+        )
+        
+        if df.empty:
+            print("No data found to generate report.")
+            return
+        
+        # Generate default filename if not provided
+        if output_file is None:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_file = f'local_git_analytics_{timestamp}.xlsx'
+        
+        # Create Excel writer
+        with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+            # Main detailed report
+            df.to_excel(writer, sheet_name='Detailed Report', index=False)
+            
+            # Summary by user
+            user_summary = df.groupby('user').agg({
+                'commits': 'sum',
+                'lines_added': 'sum',
+                'lines_deleted': 'sum',
+                'total_lines_changed': 'sum',
+                'files_modified': 'sum',
+                'estimated_hours': 'sum'
+            }).reset_index()
+            user_summary = user_summary.sort_values('estimated_hours', ascending=False)
+            user_summary.to_excel(writer, sheet_name='User Summary', index=False)
+            
+            # Summary by date
+            date_summary = df.groupby('date').agg({
+                'commits': 'sum',
+                'lines_added': 'sum',
+                'lines_deleted': 'sum',
+                'total_lines_changed': 'sum',
+                'files_modified': 'sum',
+                'estimated_hours': 'sum',
+                'user': 'count'
+            }).reset_index()
+            date_summary.rename(columns={'user': 'active_users'}, inplace=True)
+            date_summary = date_summary.sort_values('date', ascending=False)
+            date_summary.to_excel(writer, sheet_name='Daily Summary', index=False)
+        
+        print(f"\n{'='*60}")
+        print(f"Report generated successfully: {output_file}")
+        print(f"{'='*60}")
+        print(f"Total users: {df['user'].nunique()}")
+        print(f"Total commits: {df['commits'].sum()}")
+        print(f"Total lines changed: {df['total_lines_changed'].sum()}")
+        print(f"Total estimated hours: {df['estimated_hours'].sum():.2f}")
+        print(f"Date range: {df['date'].min()} to {df['date'].max()}")
+
+
+def main():
+    """Main entry point for the Local Git Analytics tool."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(
+        description='Analyze local git repositories to track commits and estimated work hours.'
+    )
+    parser.add_argument(
+        'base_path',
+        nargs='?',
+        default='.',
+        help='Base directory to search for git repositories (default: current directory)'
+    )
+    parser.add_argument(
+        '--start-date',
+        type=str,
+        help='Start date for analysis (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--end-date',
+        type=str,
+        help='End date for analysis (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        help='Output file path (default: local_git_analytics_{timestamp}.xlsx)'
+    )
+    parser.add_argument(
+        '--include-repos',
+        type=str,
+        help='Comma-separated list of repository names to include'
+    )
+    parser.add_argument(
+        '--exclude-repos',
+        type=str,
+        help='Comma-separated list of repository names to exclude'
+    )
+    parser.add_argument(
+        '--max-depth',
+        type=int,
+        default=5,
+        help='Maximum directory depth to search for repositories (default: 5)'
+    )
+    
+    args = parser.parse_args()
+    
+    # Parse dates
+    start_date = None
+    end_date = None
+    if args.start_date:
+        start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
+    if args.end_date:
+        end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
+    
+    # Parse repository filters
+    include_repos = None
+    exclude_repos = None
+    if args.include_repos:
+        include_repos = [r.strip() for r in args.include_repos.split(',')]
+    if args.exclude_repos:
+        exclude_repos = [r.strip() for r in args.exclude_repos.split(',')]
+    
+    print("=" * 60)
+    print("Local Git Analytics Tool")
+    print("=" * 60)
+    print(f"Base path: {args.base_path}")
+    if start_date:
+        print(f"Start date: {start_date.strftime('%Y-%m-%d')}")
+    if end_date:
+        print(f"End date: {end_date.strftime('%Y-%m-%d')}")
+    if include_repos:
+        print(f"Including repos: {', '.join(include_repos)}")
+    if exclude_repos:
+        print(f"Excluding repos: {', '.join(exclude_repos)}")
+    print(f"Max search depth: {args.max_depth}")
+    print("=" * 60)
+    print()
+    
+    # Create analytics instance
+    analytics = LocalGitAnalytics(args.base_path)
+    
+    # Generate report
+    analytics.generate_report(
+        args.output,
+        start_date,
+        end_date,
+        include_repos,
+        exclude_repos,
+        args.max_depth
+    )
+
+
+if __name__ == '__main__':
+    main()
