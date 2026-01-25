@@ -138,7 +138,7 @@ class GitHubAnalytics:
         
         return round(base_hours + coding_hours, 2)
     
-    def analyze_commits(self, repo, start_date=None, end_date=None) -> Dict:
+    def analyze_commits(self, repo, start_date=None, end_date=None, include_stats: bool = True) -> Dict:
         """
         Analyze commits in a repository.
         
@@ -183,13 +183,14 @@ class GitHubAnalytics:
                     data[author][date_key]['commits'] += 1
                     
                     # Get file statistics
-                    try:
-                        stats = commit.stats
-                        data[author][date_key]['additions'] += stats.additions
-                        data[author][date_key]['deletions'] += stats.deletions
-                        data[author][date_key]['total_changes'] += stats.additions + stats.deletions
-                    except Exception:
-                        pass  # Some commits may not have stats
+                    if include_stats:
+                        try:
+                            stats = commit.stats
+                            data[author][date_key]['additions'] += stats.additions
+                            data[author][date_key]['deletions'] += stats.deletions
+                            data[author][date_key]['total_changes'] += stats.additions + stats.deletions
+                        except Exception:
+                            pass  # Some commits may not have stats
                         
                 except Exception as e:
                     print(f"Warning: Error processing commit in {repo.name}: {e}")
@@ -475,7 +476,8 @@ class GitHubAnalytics:
                                  include_repos: Optional[List[str]] = None,
                                  exclude_repos: Optional[List[str]] = None,
                                  filter_by_user_contribution: Optional[str] = None,
-                                 skip_file_modifications: bool = False) -> pd.DataFrame:
+                                 skip_file_modifications: bool = False,
+                                 fast_mode: bool = False) -> pd.DataFrame:
         """
         Analyze all repositories for the user with filtering options.
         
@@ -486,6 +488,7 @@ class GitHubAnalytics:
             exclude_repos: List of repository names to exclude (None = exclude none)
             filter_by_user_contribution: Only include repos where this user has contributed
             skip_file_modifications: Skip file modification analysis (faster)
+            fast_mode: Skip PRs/issues/file mods and commit stats (fastest)
             
         Returns:
             Pandas DataFrame with comprehensive statistics
@@ -528,23 +531,31 @@ class GitHubAnalytics:
             
             # Analyze commits
             print(f"  - Analyzing commits...")
-            commit_data = self.analyze_commits(repo, start_date, end_date)
+            commit_data = self.analyze_commits(repo, start_date, end_date, include_stats=not fast_mode)
             
-            # Analyze pull requests
-            print(f"  - Analyzing pull requests...")
-            pr_data = self.analyze_pull_requests(repo, start_date, end_date)
-            
-            # Analyze issues
-            print(f"  - Analyzing issues...")
-            issue_data = self.analyze_issues(repo, start_date, end_date)
-            
-            # Analyze file modifications
-            if skip_file_modifications:
-                print(f"  - Skipping file modifications...")
+            if fast_mode:
+                print(f"  - Skipping pull requests (fast mode)...")
+                pr_data = {}
+                print(f"  - Skipping issues (fast mode)...")
+                issue_data = {}
+                print(f"  - Skipping file modifications (fast mode)...")
                 file_mod_data = {}
             else:
-                print(f"  - Analyzing file modifications...")
-                file_mod_data = self.analyze_file_modifications(repo, start_date, end_date)
+                # Analyze pull requests
+                print(f"  - Analyzing pull requests...")
+                pr_data = self.analyze_pull_requests(repo, start_date, end_date)
+                
+                # Analyze issues
+                print(f"  - Analyzing issues...")
+                issue_data = self.analyze_issues(repo, start_date, end_date)
+                
+                # Analyze file modifications
+                if skip_file_modifications:
+                    print(f"  - Skipping file modifications...")
+                    file_mod_data = {}
+                else:
+                    print(f"  - Analyzing file modifications...")
+                    file_mod_data = self.analyze_file_modifications(repo, start_date, end_date)
             
             # Merge data for this repository
             repo_data = self.merge_data(commit_data, pr_data, issue_data, file_mod_data)
@@ -605,7 +616,8 @@ class GitHubAnalytics:
                        include_repos: Optional[List[str]] = None,
                        exclude_repos: Optional[List[str]] = None,
                        filter_by_user_contribution: Optional[str] = None,
-                       skip_file_modifications: bool = False):
+                       skip_file_modifications: bool = False,
+                       fast_mode: bool = False):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -617,6 +629,7 @@ class GitHubAnalytics:
             exclude_repos: List of repository names to exclude (None = exclude none)
             filter_by_user_contribution: Only include repos where this user has contributed
             skip_file_modifications: Skip file modification analysis (faster)
+            fast_mode: Skip PRs/issues/file mods and commit stats (fastest)
         """
         # Analyze all repositories
         df = self.analyze_all_repositories(
@@ -625,7 +638,8 @@ class GitHubAnalytics:
             include_repos, 
             exclude_repos, 
             filter_by_user_contribution,
-            skip_file_modifications
+            skip_file_modifications,
+            fast_mode
         )
         
         if df.empty:
@@ -715,6 +729,7 @@ def main():
     filter_by_user = None
     skip_file_modifications = False
     disable_rate_limiting = False
+    fast_mode = False
     
     if len(sys.argv) > 1:
         # Simple command line parsing
@@ -744,6 +759,9 @@ def main():
             elif sys.argv[i] == '--skip-file-modifications':
                 skip_file_modifications = True
                 i += 1
+            elif sys.argv[i] == '--fast':
+                fast_mode = True
+                i += 1
             elif sys.argv[i] in ['--help', '-h']:
                 print("Usage: python github_analytics.py [OPTIONS]")
                 print("\nOptions:")
@@ -755,6 +773,7 @@ def main():
                 print("  --filter-by-user USERNAME      Only include repos with contributions from user")
                 print("  --disable-rate-limiting        Disable automatic rate limit handling")
                 print("  --skip-file-modifications      Skip file modification analysis (faster)")
+                print("  --fast                         Skip PRs/issues/file mods and commit stats (fastest)")
                 print("  --help, -h                     Show this help message")
                 sys.exit(0)
             else:
@@ -789,7 +808,8 @@ def main():
         include_repos,
         exclude_repos,
         filter_by_user,
-        skip_file_modifications
+        skip_file_modifications,
+        fast_mode
     )
 
 
