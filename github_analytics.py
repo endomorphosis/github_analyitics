@@ -36,6 +36,15 @@ class GitHubAnalytics:
         self.enable_rate_limiting = enable_rate_limiting
         self.api_calls_made = 0
         self.backoff_time = 1  # Initial backoff time in seconds
+
+    @staticmethod
+    def normalize_datetime(dt: Optional[datetime]) -> Optional[datetime]:
+        """Normalize a datetime to UTC and ensure timezone awareness."""
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
         
     def check_rate_limit(self):
         """
@@ -147,6 +156,9 @@ class GitHubAnalytics:
             'deletions': 0,
             'total_changes': 0
         }))
+
+        start_date = self.normalize_datetime(start_date)
+        end_date = self.normalize_datetime(end_date)
         
         try:
             commits = self.api_call_with_retry(lambda: repo.get_commits())
@@ -155,7 +167,7 @@ class GitHubAnalytics:
                 self.check_rate_limit()  # Check before processing each commit
                 try:
                     # Get commit date
-                    commit_date = commit.commit.author.date
+                    commit_date = self.normalize_datetime(commit.commit.author.date)
                     
                     # Filter by date range if specified
                     if start_date and commit_date < start_date:
@@ -206,6 +218,9 @@ class GitHubAnalytics:
             'pr_additions': 0,
             'pr_deletions': 0
         }))
+
+        start_date = self.normalize_datetime(start_date)
+        end_date = self.normalize_datetime(end_date)
         
         try:
             # Get all pull requests (open and closed)
@@ -215,7 +230,7 @@ class GitHubAnalytics:
                 self.check_rate_limit()  # Check before processing each PR
                 try:
                     # Created date
-                    created_date = pr.created_at
+                    created_date = self.normalize_datetime(pr.created_at)
                     if start_date and created_date < start_date:
                         continue
                     if end_date and created_date > end_date:
@@ -232,7 +247,7 @@ class GitHubAnalytics:
                     
                     # Check if merged
                     if pr.merged:
-                        merged_date = pr.merged_at
+                        merged_date = self.normalize_datetime(pr.merged_at)
                         if merged_date:
                             merged_key = merged_date.strftime('%Y-%m-%d')
                             data[author][merged_key]['prs_merged'] += 1
@@ -263,6 +278,9 @@ class GitHubAnalytics:
             'issues_closed': 0,
             'issue_comments': 0
         }))
+
+        start_date = self.normalize_datetime(start_date)
+        end_date = self.normalize_datetime(end_date)
         
         try:
             issues = self.api_call_with_retry(lambda: repo.get_issues(state='all'))
@@ -275,7 +293,7 @@ class GitHubAnalytics:
                         continue
                     
                     # Created date
-                    created_date = issue.created_at
+                    created_date = self.normalize_datetime(issue.created_at)
                     if start_date and created_date < start_date:
                         continue
                     if end_date and created_date > end_date:
@@ -288,7 +306,7 @@ class GitHubAnalytics:
                     
                     # Check if closed
                     if issue.closed_at:
-                        closed_date = issue.closed_at
+                        closed_date = self.normalize_datetime(issue.closed_at)
                         closed_key = closed_date.strftime('%Y-%m-%d')
                         data[author][closed_key]['issues_closed'] += 1
                     
@@ -296,7 +314,7 @@ class GitHubAnalytics:
                     try:
                         comments = issue.get_comments()
                         for comment in comments:
-                            comment_date = comment.created_at
+                            comment_date = self.normalize_datetime(comment.created_at)
                             if start_date and comment_date < start_date:
                                 continue
                             if end_date and comment_date > end_date:
@@ -335,6 +353,9 @@ class GitHubAnalytics:
         data = defaultdict(lambda: defaultdict(lambda: {
             'files_modified': 0
         }))
+
+        start_date = self.normalize_datetime(start_date)
+        end_date = self.normalize_datetime(end_date)
         
         try:
             # Get all commits to track file modifications
@@ -346,7 +367,7 @@ class GitHubAnalytics:
             for commit in commits:
                 self.check_rate_limit()  # Check before processing each commit
                 try:
-                    commit_date = commit.commit.author.date
+                    commit_date = self.normalize_datetime(commit.commit.author.date)
                     
                     # Filter by date range if specified
                     if start_date and commit_date < start_date:
@@ -469,6 +490,9 @@ class GitHubAnalytics:
         Returns:
             Pandas DataFrame with comprehensive statistics
         """
+        start_date = self.normalize_datetime(start_date)
+        end_date = self.normalize_datetime(end_date)
+
         print(f"Fetching repositories for user: {self.username}")
         
         # Convert lists to sets for faster lookup
