@@ -205,64 +205,79 @@ class GitHubAnalytics:
         end_date = self.normalize_datetime(end_date)
         
         try:
-            if start_date or end_date:
-                commits = self.api_call_with_retry(lambda: repo.get_commits(since=start_date, until=end_date))
+            if allowed_users:
+                commits_iterables = []
+                for login in sorted(allowed_users):
+                    if start_date or end_date:
+                        commits_iterables.append(
+                            self.api_call_with_retry(lambda l=login: repo.get_commits(author=l, since=start_date, until=end_date))
+                        )
+                    else:
+                        commits_iterables.append(
+                            self.api_call_with_retry(lambda l=login: repo.get_commits(author=l))
+                        )
             else:
-                commits = self.api_call_with_retry(lambda: repo.get_commits())
-            
+                if start_date or end_date:
+                    commits_iterables = [self.api_call_with_retry(lambda: repo.get_commits(since=start_date, until=end_date))]
+                else:
+                    commits_iterables = [self.api_call_with_retry(lambda: repo.get_commits())]
+
             commit_index = 0
-            for commit in commits:
-                commit_index += 1
-                if commit_index % 25 == 0:
-                    self.check_rate_limit()  # Check periodically
-                try:
-                    # Get commit date
-                    commit_date = self.normalize_datetime(commit.commit.author.date)
-                    
-                    # Filter by date range if specified
-                    if start_date and commit_date < start_date:
-                        continue
-                    if end_date and commit_date > end_date:
-                        continue
-                    
-                    # Get author information
-                    author = commit.author.login if commit.author else commit.commit.author.name
-                    author_login = commit.author.login if commit.author else None
-                    author_email = commit.commit.author.email if commit.commit.author else ""
-                    date_key = commit_date.strftime('%Y-%m-%d')
-
-                    if allowed_users is not None:
-                        if not author_login or author_login not in allowed_users:
-                            continue
-                    
-                    # Update statistics
-                    data[author][date_key]['commits'] += 1
-
-                    if self.commit_events is not None:
-                        repo_full_name = getattr(repo, 'full_name', repo.name)
-                        self.commit_events.append({
-                            'repository': repo_full_name,
-                            'commit': commit.sha,
-                            'author': author,
-                            'email': author_email,
-                            'event_type': 'commit',
-                            'event_timestamp': commit_date.isoformat(),
-                            'subject': commit.commit.message.splitlines()[0] if commit.commit.message else ""
-                        })
-                    
-                    # Get file statistics
-                    if include_stats:
-                        try:
-                            stats = commit.stats
-                            data[author][date_key]['additions'] += stats.additions
-                            data[author][date_key]['deletions'] += stats.deletions
-                            data[author][date_key]['total_changes'] += stats.additions + stats.deletions
-                        except Exception:
-                            pass  # Some commits may not have stats
-                        
-                except Exception as e:
-                    print(f"Warning: Error processing commit in {repo.name}: {e}")
+            for commits in commits_iterables:
+                if commits is None:
                     continue
+                for commit in commits:
+                    commit_index += 1
+                    if commit_index % 25 == 0:
+                        self.check_rate_limit()  # Check periodically
+                    try:
+                        # Get commit date
+                        commit_date = self.normalize_datetime(commit.commit.author.date)
+                        
+                        # Filter by date range if specified
+                        if start_date and commit_date < start_date:
+                            continue
+                        if end_date and commit_date > end_date:
+                            continue
+                        
+                        # Get author information
+                        author = commit.author.login if commit.author else commit.commit.author.name
+                        author_login = commit.author.login if commit.author else None
+                        author_email = commit.commit.author.email if commit.commit.author else ""
+                        date_key = commit_date.strftime('%Y-%m-%d')
+
+                        if allowed_users is not None:
+                            if not author_login or author_login not in allowed_users:
+                                continue
+                        
+                        # Update statistics
+                        data[author][date_key]['commits'] += 1
+
+                        if self.commit_events is not None:
+                            repo_full_name = getattr(repo, 'full_name', repo.name)
+                            self.commit_events.append({
+                                'repository': repo_full_name,
+                                'commit': commit.sha,
+                                'author': author,
+                                'email': author_email,
+                                'event_type': 'commit',
+                                'event_timestamp': commit_date.isoformat(),
+                                'subject': commit.commit.message.splitlines()[0] if commit.commit.message else ""
+                            })
+                        
+                        # Get file statistics
+                        if include_stats:
+                            try:
+                                stats = commit.stats
+                                data[author][date_key]['additions'] += stats.additions
+                                data[author][date_key]['deletions'] += stats.deletions
+                                data[author][date_key]['total_changes'] += stats.additions + stats.deletions
+                            except Exception:
+                                pass  # Some commits may not have stats
+                            
+                    except Exception as e:
+                        print(f"Warning: Error processing commit in {repo.name}: {e}")
+                        continue
                     
         except GithubException as e:
             print(f"Warning: Error accessing commits for {repo.name}: {e}")
