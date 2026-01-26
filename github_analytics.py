@@ -630,6 +630,7 @@ class GitHubAnalytics:
                                  exclude_repos: Optional[List[str]] = None,
                                  filter_by_user_contribution: Optional[str] = None,
                                  skip_file_modifications: bool = False,
+                                 skip_commit_stats: bool = False,
                                  fast_mode: bool = False) -> pd.DataFrame:
         """
         Analyze all repositories for the user with filtering options.
@@ -688,7 +689,12 @@ class GitHubAnalytics:
             
             # Analyze commits
             print(f"  - Analyzing commits...")
-            commit_data = self.analyze_commits(repo, start_date, end_date, include_stats=not fast_mode)
+            commit_data = self.analyze_commits(
+                repo,
+                start_date,
+                end_date,
+                include_stats=not fast_mode and not skip_commit_stats
+            )
             
             if fast_mode:
                 print(f"  - Skipping pull requests (fast mode)...")
@@ -774,6 +780,7 @@ class GitHubAnalytics:
                        exclude_repos: Optional[List[str]] = None,
                        filter_by_user_contribution: Optional[str] = None,
                        skip_file_modifications: bool = False,
+                       skip_commit_stats: bool = False,
                        fast_mode: bool = False):
         """
         Generate a comprehensive report and save to Excel.
@@ -796,6 +803,7 @@ class GitHubAnalytics:
             exclude_repos, 
             filter_by_user_contribution,
             skip_file_modifications,
+            skip_commit_stats,
             fast_mode
         )
         
@@ -919,6 +927,7 @@ def main():
     exclude_repos = None
     filter_by_user = None
     skip_file_modifications = False
+    skip_commit_stats = False
     disable_rate_limiting = False
     fast_mode = False
     
@@ -950,6 +959,9 @@ def main():
             elif sys.argv[i] == '--skip-file-modifications':
                 skip_file_modifications = True
                 i += 1
+            elif sys.argv[i] == '--skip-commit-stats':
+                skip_commit_stats = True
+                i += 1
             elif sys.argv[i] == '--fast':
                 fast_mode = True
                 i += 1
@@ -964,6 +976,7 @@ def main():
                 print("  --filter-by-user USERNAME      Only include repos with contributions from user")
                 print("  --disable-rate-limiting        Disable automatic rate limit handling")
                 print("  --skip-file-modifications      Skip file modification analysis (faster)")
+                print("  --skip-commit-stats             Skip commit stats lookup (faster)")
                 print("  --fast                         Skip PRs/issues/file mods and commit stats (fastest)")
                 print("  --help, -h                     Show this help message")
                 sys.exit(0)
@@ -1000,6 +1013,7 @@ def main():
         exclude_repos,
         filter_by_user,
         skip_file_modifications,
+        skip_commit_stats,
         fast_mode
     )
 
