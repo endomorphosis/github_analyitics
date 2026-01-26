@@ -135,6 +135,29 @@ class GitHubAnalytics:
                     raise
         
         return None
+
+    def get_allowed_users(self, repo) -> Set[str]:
+        """Return logins allowed for attribution within this repo."""
+        allowed: Set[str] = set()
+        try:
+            owner = getattr(repo, 'owner', None)
+            if owner and owner.login:
+                allowed.add(owner.login)
+        except Exception:
+            pass
+
+        try:
+            collaborators = self.api_call_with_retry(lambda: repo.get_collaborators())
+            for user in collaborators:
+                if user and user.login:
+                    allowed.add(user.login)
+        except Exception as e:
+            print(f"  [FILTER] Could not load collaborators for {repo.name}: {e}")
+
+        if not allowed:
+            allowed.add(self.username)
+
+        return allowed
         
     def estimate_hours_from_commits(self, commits_count: int, lines_changed: int) -> float:
         """
@@ -158,7 +181,8 @@ class GitHubAnalytics:
         
         return round(base_hours + coding_hours, 2)
     
-    def analyze_commits(self, repo, start_date=None, end_date=None, include_stats: bool = True) -> Dict:
+    def analyze_commits(self, repo, start_date=None, end_date=None, include_stats: bool = True,
+                        allowed_users: Optional[Set[str]] = None) -> Dict:
         """
         Analyze commits in a repository.
         
@@ -203,8 +227,13 @@ class GitHubAnalytics:
                     
                     # Get author information
                     author = commit.author.login if commit.author else commit.commit.author.name
+                    author_login = commit.author.login if commit.author else None
                     author_email = commit.commit.author.email if commit.commit.author else ""
                     date_key = commit_date.strftime('%Y-%m-%d')
+
+                    if allowed_users is not None:
+                        if not author_login or author_login not in allowed_users:
+                            continue
                     
                     # Update statistics
                     data[author][date_key]['commits'] += 1
@@ -240,7 +269,8 @@ class GitHubAnalytics:
             
         return data
     
-    def analyze_pull_requests(self, repo, start_date=None, end_date=None) -> Dict:
+    def analyze_pull_requests(self, repo, start_date=None, end_date=None,
+                              allowed_users: Optional[Set[str]] = None) -> Dict:
         """
         Analyze pull requests in a repository.
         
@@ -281,6 +311,9 @@ class GitHubAnalytics:
                         created_in_range = False
                     
                     author = pr.user.login if pr.user else "Unknown"
+                    if allowed_users is not None:
+                        if not pr.user or pr.user.login not in allowed_users:
+                            continue
                     date_key = created_date.strftime('%Y-%m-%d')
                     
                     if created_in_range:
@@ -363,7 +396,8 @@ class GitHubAnalytics:
             
         return data
     
-    def analyze_issues(self, repo, start_date=None, end_date=None) -> Dict:
+    def analyze_issues(self, repo, start_date=None, end_date=None,
+                       allowed_users: Optional[Set[str]] = None) -> Dict:
         """
         Analyze issues in a repository.
         
@@ -406,6 +440,9 @@ class GitHubAnalytics:
                         created_in_range = False
                     
                     author = issue.user.login if issue.user else "Unknown"
+                    if allowed_users is not None:
+                        if not issue.user or issue.user.login not in allowed_users:
+                            continue
                     date_key = created_date.strftime('%Y-%m-%d')
                     
                     if created_in_range:
@@ -458,6 +495,9 @@ class GitHubAnalytics:
                                 continue
                             
                             commenter = comment.user.login if comment.user else "Unknown"
+                            if allowed_users is not None:
+                                if not comment.user or comment.user.login not in allowed_users:
+                                    continue
                             comment_key = comment_date.strftime('%Y-%m-%d')
                             data[commenter][comment_key]['issue_comments'] += 1
 
@@ -631,6 +671,7 @@ class GitHubAnalytics:
                                  filter_by_user_contribution: Optional[str] = None,
                                  skip_file_modifications: bool = False,
                                  skip_commit_stats: bool = False,
+                                 restrict_to_collaborators: bool = True,
                                  fast_mode: bool = False) -> pd.DataFrame:
         """
         Analyze all repositories for the user with filtering options.
@@ -686,6 +727,10 @@ class GitHubAnalytics:
                 
             repo_count += 1
             print(f"Analyzing repository {repo_count}: {repo.name}")
+
+            allowed_users = None
+            if restrict_to_collaborators:
+                allowed_users = self.get_allowed_users(repo)
             
             # Analyze commits
             print(f"  - Analyzing commits...")
@@ -693,7 +738,8 @@ class GitHubAnalytics:
                 repo,
                 start_date,
                 end_date,
-                include_stats=not fast_mode and not skip_commit_stats
+                include_stats=not fast_mode and not skip_commit_stats,
+                allowed_users=allowed_users
             )
             
             if fast_mode:
@@ -706,11 +752,11 @@ class GitHubAnalytics:
             else:
                 # Analyze pull requests
                 print(f"  - Analyzing pull requests...")
-                pr_data = self.analyze_pull_requests(repo, start_date, end_date)
+                pr_data = self.analyze_pull_requests(repo, start_date, end_date, allowed_users=allowed_users)
                 
                 # Analyze issues
                 print(f"  - Analyzing issues...")
-                issue_data = self.analyze_issues(repo, start_date, end_date)
+                issue_data = self.analyze_issues(repo, start_date, end_date, allowed_users=allowed_users)
                 
                 # Analyze file modifications
                 if skip_file_modifications:
@@ -781,6 +827,7 @@ class GitHubAnalytics:
                        filter_by_user_contribution: Optional[str] = None,
                        skip_file_modifications: bool = False,
                        skip_commit_stats: bool = False,
+                       restrict_to_collaborators: bool = True,
                        fast_mode: bool = False):
         """
         Generate a comprehensive report and save to Excel.
@@ -804,6 +851,7 @@ class GitHubAnalytics:
             filter_by_user_contribution,
             skip_file_modifications,
             skip_commit_stats,
+            restrict_to_collaborators,
             fast_mode
         )
         
@@ -928,6 +976,7 @@ def main():
     filter_by_user = None
     skip_file_modifications = False
     skip_commit_stats = False
+    include_all_authors = False
     disable_rate_limiting = False
     fast_mode = False
     
@@ -962,6 +1011,9 @@ def main():
             elif sys.argv[i] == '--skip-commit-stats':
                 skip_commit_stats = True
                 i += 1
+            elif sys.argv[i] == '--include-all-authors':
+                include_all_authors = True
+                i += 1
             elif sys.argv[i] == '--fast':
                 fast_mode = True
                 i += 1
@@ -977,6 +1029,7 @@ def main():
                 print("  --disable-rate-limiting        Disable automatic rate limit handling")
                 print("  --skip-file-modifications      Skip file modification analysis (faster)")
                 print("  --skip-commit-stats             Skip commit stats lookup (faster)")
+                print("  --include-all-authors          Include all authors (disable collaborator-only filter)")
                 print("  --fast                         Skip PRs/issues/file mods and commit stats (fastest)")
                 print("  --help, -h                     Show this help message")
                 sys.exit(0)
@@ -1014,6 +1067,7 @@ def main():
         filter_by_user,
         skip_file_modifications,
         skip_commit_stats,
+        not include_all_authors,
         fast_mode
     )
 
