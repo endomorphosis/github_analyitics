@@ -1,0 +1,21 @@
+            user  commits  prs_created  issues_created
+         Copilot      145           18               0
+ hallucinate-llc       24            3               0
+   endomorphosis      142            2               0
+        thomwolf     1384            0               0
+         sgugger     1362            0               0
+     LysandreJik     1003            0               0
+         ydshieh      838            0               0
+     jaredcasper      794            0               0
+patrickvonplaten      790            0               0
+   Martin Durant      790            0               0
+     hijohnnylin      649            0               0
+    martindurant      608            0               0
+          stas00      517            0               0
+ dependabot[bot]      407            0               0
+        julien-c      401            0               0
+         shoeybi      339            0               0
+  lmcafee-nvidia      336            0               0
+       sshleifer      280            0               0
+           gante      279            0               0
+        mishig25      273            0               0
