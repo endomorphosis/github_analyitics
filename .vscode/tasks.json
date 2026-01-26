@@ -12,6 +12,12 @@
 			"type": "shell",
 			"command": "$env:GITHUB_TOKEN = (gh auth token); $env:GITHUB_USERNAME = (gh api user -q .login); C:\\Users\\Admin\\github_analyitics\\.venv\\Scripts\\python.exe \"C:\\Users\\Admin\\github_analyitics\\github_analytics.py\" --skip-file-modifications --skip-commit-stats --output \"C:\\Users\\Admin\\github_analyitics\\github_analytics_timestamps.xlsx\"",
 			"isBackground": false
+		},
+		{
+			"label": "Generate timestamps report (owned only)",
+			"type": "shell",
+			"command": "$env:GITHUB_TOKEN = (gh auth token); $env:GITHUB_USERNAME = (gh api user -q .login); C:\\Users\\Admin\\github_analyitics\\.venv\\Scripts\\python.exe \"C:\\Users\\Admin\\github_analyitics\\github_analytics.py\" --skip-file-modifications --skip-commit-stats --output \"C:\\Users\\Admin\\github_analyitics\\github_analytics_timestamps.xlsx\"",
+			"isBackground": false
 		}
 	]
 }
