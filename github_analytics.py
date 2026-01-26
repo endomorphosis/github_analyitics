@@ -672,6 +672,7 @@ class GitHubAnalytics:
                                  skip_file_modifications: bool = False,
                                  skip_commit_stats: bool = False,
                                  restrict_to_collaborators: bool = True,
+                                 restrict_to_owner_namespace: bool = True,
                                  fast_mode: bool = False) -> pd.DataFrame:
         """
         Analyze all repositories for the user with filtering options.
@@ -719,6 +720,13 @@ class GitHubAnalytics:
         repo_count = 0
         skipped_count = 0
         for repo in repos:
+            if restrict_to_owner_namespace:
+                owner = getattr(repo, 'owner', None)
+                owner_login = owner.login if owner else None
+                if owner_login and owner_login != self.username:
+                    skipped_count += 1
+                    print(f"Skipping non-owned repository: {repo.name} ({owner_login})")
+                    continue
             # Check if repository should be included
             if not self.should_include_repository(repo, include_set, exclude_set, filter_by_user_contribution):
                 skipped_count += 1
@@ -828,6 +836,7 @@ class GitHubAnalytics:
                        skip_file_modifications: bool = False,
                        skip_commit_stats: bool = False,
                        restrict_to_collaborators: bool = True,
+                       restrict_to_owner_namespace: bool = True,
                        fast_mode: bool = False):
         """
         Generate a comprehensive report and save to Excel.
@@ -852,6 +861,7 @@ class GitHubAnalytics:
             skip_file_modifications,
             skip_commit_stats,
             restrict_to_collaborators,
+            restrict_to_owner_namespace,
             fast_mode
         )
         
@@ -977,6 +987,7 @@ def main():
     skip_file_modifications = False
     skip_commit_stats = False
     include_all_authors = False
+    include_non_owned = False
     disable_rate_limiting = False
     fast_mode = False
     
@@ -1014,6 +1025,9 @@ def main():
             elif sys.argv[i] == '--include-all-authors':
                 include_all_authors = True
                 i += 1
+            elif sys.argv[i] == '--include-non-owned':
+                include_non_owned = True
+                i += 1
             elif sys.argv[i] == '--fast':
                 fast_mode = True
                 i += 1
@@ -1030,6 +1044,7 @@ def main():
                 print("  --skip-file-modifications      Skip file modification analysis (faster)")
                 print("  --skip-commit-stats             Skip commit stats lookup (faster)")
                 print("  --include-all-authors          Include all authors (disable collaborator-only filter)")
+                print("  --include-non-owned            Include repositories not owned by this user")
                 print("  --fast                         Skip PRs/issues/file mods and commit stats (fastest)")
                 print("  --help, -h                     Show this help message")
                 sys.exit(0)
@@ -1068,6 +1083,7 @@ def main():
         skip_file_modifications,
         skip_commit_stats,
         not include_all_authors,
+        not include_non_owned,
         fast_mode
     )
 
