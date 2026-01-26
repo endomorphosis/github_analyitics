@@ -109,7 +109,7 @@ python github_analytics.py --help
 
 ## Output
 
-The generated Excel file contains three sheets:
+The generated Excel file contains five sheets:
 
 ### 1. Detailed Report
 Daily breakdown per user including:
@@ -138,6 +138,12 @@ Aggregated statistics per day:
 - Total estimated hours per day
 - Number of active users
 - Daily trends in commits, PRs, and issues
+
+### 4. PR Events
+Timestamped pull request events (created/closed/merged) with repository, PR number, author, and URL.
+
+### 5. Issue Events
+Timestamped issue events (created/closed/comments) with repository, issue number, author, and URL.
 
 ## Metrics Explained
 

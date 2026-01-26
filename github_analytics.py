@@ -37,6 +37,8 @@ class GitHubAnalytics:
         self.api_calls_made = 0
         self.backoff_time = 1  # Initial backoff time in seconds
         self.last_rate_limit_check = 0.0
+        self.pr_events: List[Dict] = []
+        self.issue_events: List[Dict] = []
 
     @staticmethod
     def normalize_datetime(dt: Optional[datetime]) -> Optional[datetime]:
@@ -258,26 +260,85 @@ class GitHubAnalytics:
                 try:
                     # Created date
                     created_date = self.normalize_datetime(pr.created_at)
+                    created_in_range = True
                     if start_date and created_date < start_date:
-                        continue
+                        created_in_range = False
                     if end_date and created_date > end_date:
-                        continue
+                        created_in_range = False
                     
                     author = pr.user.login if pr.user else "Unknown"
                     date_key = created_date.strftime('%Y-%m-%d')
                     
-                    data[author][date_key]['prs_created'] += 1
+                    if created_in_range:
+                        data[author][date_key]['prs_created'] += 1
                     
                     # Add line changes from PR
-                    data[author][date_key]['pr_additions'] += pr.additions
-                    data[author][date_key]['pr_deletions'] += pr.deletions
+                    if created_in_range:
+                        data[author][date_key]['pr_additions'] += pr.additions
+                        data[author][date_key]['pr_deletions'] += pr.deletions
                     
                     # Check if merged
                     if pr.merged:
                         merged_date = self.normalize_datetime(pr.merged_at)
                         if merged_date:
-                            merged_key = merged_date.strftime('%Y-%m-%d')
-                            data[author][merged_key]['prs_merged'] += 1
+                            merged_in_range = True
+                            if start_date and merged_date < start_date:
+                                merged_in_range = False
+                            if end_date and merged_date > end_date:
+                                merged_in_range = False
+                            if merged_in_range:
+                                merged_key = merged_date.strftime('%Y-%m-%d')
+                                data[author][merged_key]['prs_merged'] += 1
+
+                    if self.pr_events is not None:
+                        repo_full_name = getattr(repo, 'full_name', repo.name)
+                        if created_in_range:
+                            self.pr_events.append({
+                                'repository': repo_full_name,
+                                'number': pr.number,
+                                'title': pr.title,
+                                'author': author,
+                                'event_type': 'created',
+                                'event_timestamp': created_date.isoformat(),
+                                'url': pr.html_url
+                            })
+
+                        closed_date = self.normalize_datetime(pr.closed_at)
+                        if closed_date:
+                            closed_in_range = True
+                            if start_date and closed_date < start_date:
+                                closed_in_range = False
+                            if end_date and closed_date > end_date:
+                                closed_in_range = False
+                        if closed_date and closed_in_range:
+                            self.pr_events.append({
+                                'repository': repo_full_name,
+                                'number': pr.number,
+                                'title': pr.title,
+                                'author': author,
+                                'event_type': 'closed',
+                                'event_timestamp': closed_date.isoformat(),
+                                'url': pr.html_url
+                            })
+
+                        if pr.merged and pr.merged_at:
+                            merged_date = self.normalize_datetime(pr.merged_at)
+                            if merged_date:
+                                merged_in_range = True
+                                if start_date and merged_date < start_date:
+                                    merged_in_range = False
+                                if end_date and merged_date > end_date:
+                                    merged_in_range = False
+                            if merged_date and merged_in_range:
+                                self.pr_events.append({
+                                    'repository': repo_full_name,
+                                    'number': pr.number,
+                                    'title': pr.title,
+                                    'author': author,
+                                    'event_type': 'merged',
+                                    'event_timestamp': merged_date.isoformat(),
+                                    'url': pr.html_url
+                                })
                             
                 except Exception as e:
                     print(f"Warning: Error processing PR in {repo.name}: {e}")
@@ -324,21 +385,53 @@ class GitHubAnalytics:
                     
                     # Created date
                     created_date = self.normalize_datetime(issue.created_at)
+                    created_in_range = True
                     if start_date and created_date < start_date:
-                        continue
+                        created_in_range = False
                     if end_date and created_date > end_date:
-                        continue
+                        created_in_range = False
                     
                     author = issue.user.login if issue.user else "Unknown"
                     date_key = created_date.strftime('%Y-%m-%d')
                     
-                    data[author][date_key]['issues_created'] += 1
+                    if created_in_range:
+                        data[author][date_key]['issues_created'] += 1
+
+                    if self.issue_events is not None:
+                        repo_full_name = getattr(repo, 'full_name', repo.name)
+                        if created_in_range:
+                            self.issue_events.append({
+                                'repository': repo_full_name,
+                                'number': issue.number,
+                                'title': issue.title,
+                                'author': author,
+                                'event_type': 'created',
+                                'event_timestamp': created_date.isoformat(),
+                                'url': issue.html_url
+                            })
                     
                     # Check if closed
                     if issue.closed_at:
                         closed_date = self.normalize_datetime(issue.closed_at)
-                        closed_key = closed_date.strftime('%Y-%m-%d')
-                        data[author][closed_key]['issues_closed'] += 1
+                        closed_in_range = True
+                        if start_date and closed_date < start_date:
+                            closed_in_range = False
+                        if end_date and closed_date > end_date:
+                            closed_in_range = False
+                        if closed_in_range:
+                            closed_key = closed_date.strftime('%Y-%m-%d')
+                            data[author][closed_key]['issues_closed'] += 1
+
+                        if self.issue_events is not None and closed_in_range:
+                            self.issue_events.append({
+                                'repository': repo_full_name,
+                                'number': issue.number,
+                                'title': issue.title,
+                                'author': author,
+                                'event_type': 'closed',
+                                'event_timestamp': closed_date.isoformat(),
+                                'url': issue.html_url
+                            })
                     
                     # Count comments
                     try:
@@ -353,6 +446,17 @@ class GitHubAnalytics:
                             commenter = comment.user.login if comment.user else "Unknown"
                             comment_key = comment_date.strftime('%Y-%m-%d')
                             data[commenter][comment_key]['issue_comments'] += 1
+
+                            if self.issue_events is not None:
+                                self.issue_events.append({
+                                    'repository': repo_full_name,
+                                    'number': issue.number,
+                                    'title': issue.title,
+                                    'author': commenter,
+                                    'event_type': 'comment',
+                                    'event_timestamp': comment_date.isoformat(),
+                                    'url': issue.html_url
+                                })
                     except Exception:
                         pass
                         
@@ -532,6 +636,9 @@ class GitHubAnalytics:
         end_date = self.normalize_datetime(end_date)
 
         print(f"Fetching repositories for user: {self.username}")
+
+        self.pr_events = []
+        self.issue_events = []
         
         # Convert lists to sets for faster lookup
         include_set = set(include_repos) if include_repos else None
@@ -726,6 +833,16 @@ class GitHubAnalytics:
             date_summary.rename(columns={'user': 'active_users'}, inplace=True)
             date_summary = date_summary.sort_values('date', ascending=False)
             date_summary.to_excel(writer, sheet_name='Daily Summary', index=False)
+
+            if self.pr_events:
+                pr_events_df = pd.DataFrame(self.pr_events)
+                pr_events_df = pr_events_df.sort_values('event_timestamp', ascending=False)
+                pr_events_df.to_excel(writer, sheet_name='PR Events', index=False)
+
+            if self.issue_events:
+                issue_events_df = pd.DataFrame(self.issue_events)
+                issue_events_df = issue_events_df.sort_values('event_timestamp', ascending=False)
+                issue_events_df.to_excel(writer, sheet_name='Issue Events', index=False)
         
         print(f"\nReport generated successfully: {output_file}")
         print(f"Total users: {df['user'].nunique()}")

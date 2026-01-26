@@ -59,7 +59,7 @@ python github_analytics.py \
 
 ## Understanding the Report
 
-The generated Excel file contains three sheets:
+The generated Excel file contains five sheets:
 
 ### Sheet 1: Detailed Report
 
@@ -93,6 +93,12 @@ Totals per day:
 - **Estimated Hours**: Total hours worked per day across all users
 - **Active Users**: Number of unique contributors per day
 - Useful for tracking team velocity and activity trends
+
+### Sheet 4: PR Events
+Timestamped pull request events (created/closed/merged), including repository, PR number, author, and URL.
+
+### Sheet 5: Issue Events
+Timestamped issue events (created/closed/comments), including repository, issue number, author, and URL.
 
 ## Metrics Explained
 

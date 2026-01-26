@@ -8,6 +8,8 @@ by directly reading git history without using the GitHub API.
 
 import os
 import sys
+import json
+import csv
 import subprocess
 from datetime import datetime, timezone
 from collections import defaultdict
@@ -19,14 +21,82 @@ import pandas as pd
 class LocalGitAnalytics:
     """Analyzes local git repositories without using the GitHub API."""
     
-    def __init__(self, base_path: str):
+    def __init__(self, base_path: str, copilot_invokers_path: Optional[str] = None):
         """
         Initialize Local Git Analytics.
         
         Args:
             base_path: Base directory to search for git repositories
+            copilot_invokers_path: Optional mapping file for Copilot invokers
         """
         self.base_path = Path(base_path).resolve()
+        self.file_events: List[Dict] = []
+        self.copilot_invokers = self.load_copilot_invokers(copilot_invokers_path)
+
+    @staticmethod
+    def normalize_identity(value: Optional[str]) -> str:
+        return (value or '').strip().lower()
+
+    @staticmethod
+    def is_copilot_identity(name: str, email: str) -> bool:
+        identity = f"{name} {email}".lower()
+        return 'copilot' in identity
+
+    @staticmethod
+    def has_copilot_trailer(message: str) -> bool:
+        if not message:
+            return False
+        for line in message.splitlines():
+            if line.lower().startswith('co-authored-by:') and 'copilot' in line.lower():
+                return True
+        return False
+
+    def resolve_invoker(self, author: str, email: str, copilot_involved: bool) -> str:
+        if not copilot_involved:
+            return author
+
+        author_key = self.normalize_identity(author)
+        email_key = self.normalize_identity(email)
+
+        return (
+            self.copilot_invokers.get(author_key)
+            or self.copilot_invokers.get(email_key)
+            or author
+        )
+
+    @staticmethod
+    def load_copilot_invokers(path: Optional[str]) -> Dict[str, str]:
+        if not path:
+            return {}
+
+        invokers: Dict[str, str] = {}
+        mapping_path = Path(path)
+        if not mapping_path.exists():
+            print(f"Warning: Copilot invoker mapping file not found: {mapping_path}")
+            return {}
+
+        if mapping_path.suffix.lower() == '.json':
+            with mapping_path.open('r', encoding='utf-8') as handle:
+                data = json.load(handle)
+            if isinstance(data, dict):
+                for key, value in data.items():
+                    if key and value:
+                        invokers[str(key).strip().lower()] = str(value).strip()
+        elif mapping_path.suffix.lower() == '.csv':
+            with mapping_path.open('r', encoding='utf-8') as handle:
+                reader = csv.reader(handle)
+                for row in reader:
+                    if len(row) < 2:
+                        continue
+                    key = row[0].strip()
+                    value = row[1].strip()
+                    if not key or not value or key.lower() == 'copilot_id':
+                        continue
+                    invokers[key.lower()] = value
+        else:
+            print(f"Warning: Unsupported copilot invoker mapping format: {mapping_path.suffix}")
+
+        return invokers
         
     @staticmethod
     def estimate_hours_from_commits(commits_count: int, lines_changed: int) -> float:
@@ -103,7 +173,8 @@ class LocalGitAnalytics:
         return repos
     
     def get_git_log(self, repo_path: Path, start_date: Optional[datetime] = None, 
-                    end_date: Optional[datetime] = None) -> List[Dict]:
+                    end_date: Optional[datetime] = None,
+                    copilot_commits: Optional[Set[str]] = None) -> List[Dict]:
         """
         Get git log data from a repository.
         
@@ -141,13 +212,13 @@ class LocalGitAnalytics:
                 check=True
             )
             
-            return self.parse_git_log(result.stdout)
+            return self.parse_git_log(result.stdout, copilot_commits)
             
         except subprocess.CalledProcessError as e:
             print(f"Warning: Error reading git log from {repo_path.name}: {e}")
             return []
     
-    def parse_git_log(self, log_output: str) -> List[Dict]:
+    def parse_git_log(self, log_output: str, copilot_commits: Optional[Set[str]] = None) -> List[Dict]:
         """
         Parse git log output with numstat.
         
@@ -185,6 +256,12 @@ class LocalGitAnalytics:
                         i += 1
                         continue
                     
+                    copilot_involved = False
+                    if copilot_commits is not None:
+                        copilot_involved = commit_hash in copilot_commits
+                    if self.is_copilot_identity(author_name, author_email):
+                        copilot_involved = True
+
                     # Initialize commit data
                     commit_data = {
                         'hash': commit_hash,
@@ -194,7 +271,8 @@ class LocalGitAnalytics:
                         'subject': subject,
                         'additions': 0,
                         'deletions': 0,
-                        'files_changed': 0
+                        'files_changed': 0,
+                        'copilot_involved': copilot_involved
                     }
                     
                     # Parse numstat lines (format: additions\tdeletions\tfilename)
@@ -224,7 +302,8 @@ class LocalGitAnalytics:
         return commits
     
     def get_file_modifications(self, repo_path: Path, start_date: Optional[datetime] = None,
-                               end_date: Optional[datetime] = None) -> List[Dict]:
+                               end_date: Optional[datetime] = None,
+                               copilot_commits: Optional[Set[str]] = None) -> List[Dict]:
         """
         Get detailed file modification data from repository commits.
         
@@ -285,6 +364,12 @@ class LocalGitAnalytics:
                             i += 1
                             continue
                         
+                        copilot_involved = False
+                        if copilot_commits is not None:
+                            copilot_involved = commit_hash in copilot_commits
+                        if self.is_copilot_identity(author, email):
+                            copilot_involved = True
+
                         # Parse file status lines
                         i += 1
                         while i < len(lines):
@@ -305,8 +390,54 @@ class LocalGitAnalytics:
                                         'email': email,
                                         'date': commit_date,
                                         'status': status,
-                                        'file': filename
+                                        'file': filename,
+                                        'copilot_involved': copilot_involved
                                     })
+                                def get_copilot_commit_hashes(self, repo_path: Path,
+                                                              start_date: Optional[datetime] = None,
+                                                              end_date: Optional[datetime] = None) -> Set[str]:
+                                    cmd = [
+                                        'git', 'log',
+                                        '--all',
+                                        '--pretty=format:%H%x1f%an%x1f%ae%x1f%B%x1e',
+                                    ]
+
+                                    if start_date:
+                                        cmd.append(f'--since={start_date.isoformat()}')
+                                    if end_date:
+                                        cmd.append(f'--until={end_date.isoformat()}')
+
+                                    try:
+                                        result = subprocess.run(
+                                            cmd,
+                                            cwd=repo_path,
+                                            capture_output=True,
+                                            text=True,
+                                            encoding='utf-8',
+                                            errors='replace',
+                                            check=True
+                                        )
+                                    except subprocess.CalledProcessError as e:
+                                        print(f"Warning: Error reading copilot markers from {repo_path.name}: {e}")
+                                        return set()
+
+                                    copilot_commits = set()
+                                    records = result.stdout.split('\x1e')
+                                    for record in records:
+                                        if not record.strip():
+                                            continue
+                                        parts = record.split('\x1f')
+                                        if len(parts) < 4:
+                                            continue
+                                        commit_hash = parts[0].strip()
+                                        author_name = parts[1].strip()
+                                        author_email = parts[2].strip()
+                                        message_body = parts[3]
+
+                                        if self.is_copilot_identity(author_name, author_email) or self.has_copilot_trailer(message_body):
+                                            copilot_commits.add(commit_hash)
+
+                                    return copilot_commits
                             
                             i += 1
                         continue
@@ -388,27 +519,46 @@ class LocalGitAnalytics:
             'commit_times': []
         }))
         
-        commits = self.get_git_log(repo_path, start_date, end_date)
-        modifications = self.get_file_modifications(repo_path, start_date, end_date)
+        copilot_commits = self.get_copilot_commit_hashes(repo_path, start_date, end_date)
+        commits = self.get_git_log(repo_path, start_date, end_date, copilot_commits)
+        modifications = self.get_file_modifications(repo_path, start_date, end_date, copilot_commits)
         
         # Track commits
         for commit in commits:
             author = commit['author']
+            email = commit['email']
             date_key = commit['date'].strftime('%Y-%m-%d')
+            copilot_involved = commit.get('copilot_involved', False)
+            attributed_user = self.resolve_invoker(author, email, copilot_involved)
             
-            data[author][date_key]['commits'] += 1
-            data[author][date_key]['additions'] += commit['additions']
-            data[author][date_key]['deletions'] += commit['deletions']
-            data[author][date_key]['total_changes'] += commit['additions'] + commit['deletions']
-            data[author][date_key]['commit_times'].append({'date': commit['date']})
+            data[attributed_user][date_key]['commits'] += 1
+            data[attributed_user][date_key]['additions'] += commit['additions']
+            data[attributed_user][date_key]['deletions'] += commit['deletions']
+            data[attributed_user][date_key]['total_changes'] += commit['additions'] + commit['deletions']
+            data[attributed_user][date_key]['commit_times'].append({'date': commit['date']})
         
         # Track file modifications
         for mod in modifications:
             author = mod['author']
+            email = mod['email']
             date_key = mod['date'].strftime('%Y-%m-%d')
+            copilot_involved = mod.get('copilot_involved', False)
+            attributed_user = self.resolve_invoker(author, email, copilot_involved)
             
             # Track unique files modified
-            data[author][date_key]['files_modified'].add(mod['file'])
+            data[attributed_user][date_key]['files_modified'].add(mod['file'])
+
+            if self.file_events is not None:
+                self.file_events.append({
+                    'repository': repo_path.name,
+                    'author': author,
+                    'attributed_user': attributed_user,
+                    'copilot_involved': copilot_involved,
+                    'email': email,
+                    'event_timestamp': mod['date'].isoformat(),
+                    'status': mod['status'],
+                    'file': mod['file']
+                })
         
         # Convert sets to counts and calculate session-based hours if requested
         for author in data:
@@ -477,6 +627,7 @@ class LocalGitAnalytics:
             Pandas DataFrame with comprehensive statistics
         """
         # Find all repositories
+        self.file_events = []
         repos = self.find_git_repositories(max_depth)
         
         # Filter repositories
@@ -620,6 +771,11 @@ class LocalGitAnalytics:
             date_summary.rename(columns={'user': 'active_users'}, inplace=True)
             date_summary = date_summary.sort_values('date', ascending=False)
             date_summary.to_excel(writer, sheet_name='Daily Summary', index=False)
+
+            if self.file_events:
+                file_events_df = pd.DataFrame(self.file_events)
+                file_events_df = file_events_df.sort_values('event_timestamp', ascending=False)
+                file_events_df.to_excel(writer, sheet_name='File Events', index=False)
         
         print(f"\n{'='*60}")
         print(f"Report generated successfully: {output_file}")
@@ -680,6 +836,11 @@ def main():
         action='store_true',
         help='Use session-based hour estimation (groups commits by time)'
     )
+    parser.add_argument(
+        '--copilot-invokers',
+        type=str,
+        help='Path to JSON or CSV mapping Copilot identities to invoker usernames'
+    )
     
     args = parser.parse_args()
     
@@ -720,7 +881,7 @@ def main():
     print()
     
     # Create analytics instance
-    analytics = LocalGitAnalytics(args.base_path)
+    analytics = LocalGitAnalytics(args.base_path, args.copilot_invokers)
     
     # Generate report
     analytics.generate_report(
