@@ -83,13 +83,17 @@ def clone_bare_repository(repo_full_name, target_dir):
     target_path = target_dir / repo_name
     
     # Clone as bare repository (no working files, just git data)
-    cmd = f'gh repo clone {repo_full_name} "{target_path}" -- --bare'
+    cmd = f'gh repo clone {repo_full_name} "{target_path}" -- --bare --no-tags'
     
-    print(f"  Cloning {repo_name} (bare)...")
-    result = run_command(cmd, capture=False)
-    
-    if target_path.exists():
-        return target_path
+    print(f"  Cloning {repo_name} (bare, no tags)...")
+    for attempt in range(1, 4):
+        run_command(cmd, capture=False)
+        if target_path.exists():
+            return target_path
+        # Cleanup and retry
+        if target_path.exists():
+            shutil.rmtree(target_path, ignore_errors=True)
+        print(f"  Retry {attempt}/3 failed for {repo_name}")
     return None
 
 

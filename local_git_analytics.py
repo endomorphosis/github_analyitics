@@ -58,6 +58,19 @@ class LocalGitAnalytics:
             List of paths to git repositories
         """
         repos = []
+
+        def is_bare_git_repo(path: Path) -> bool:
+            head = path / 'HEAD'
+            objects_dir = path / 'objects'
+            refs_dir = path / 'refs'
+            packed_refs = path / 'packed-refs'
+            config = path / 'config'
+            return (
+                head.is_file()
+                and objects_dir.is_dir()
+                and (refs_dir.is_dir() or packed_refs.is_file())
+                and config.is_file()
+            )
         
         def search_dir(path: Path, depth: int):
             if depth > max_depth:
@@ -67,6 +80,11 @@ class LocalGitAnalytics:
                 # Check if this directory is a git repo
                 git_dir = path / '.git'
                 if git_dir.exists() and git_dir.is_dir():
+                    repos.append(path)
+                    return  # Don't search inside git repos
+
+                # Check if this directory is a bare git repo
+                if is_bare_git_repo(path):
                     repos.append(path)
                     return  # Don't search inside git repos
                 
@@ -118,6 +136,8 @@ class LocalGitAnalytics:
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
             
@@ -234,6 +254,8 @@ class LocalGitAnalytics:
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
             
