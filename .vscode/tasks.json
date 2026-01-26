@@ -60,6 +60,12 @@
 			"type": "shell",
 			"command": "C:\\Users\\Admin\\github_analyitics\\.venv\\Scripts\\python.exe \"C:\\Users\\Admin\\github_analyitics\\clone_and_analyze.py\" --output \"C:\\Users\\Admin\\github_analyitics\\github_analysis_with_file_timestamps.xlsx\" --cleanup",
 			"isBackground": false
+		},
+		{
+			"label": "Rerun timestamp report (git file timestamps)",
+			"type": "shell",
+			"command": "C:\\Users\\Admin\\github_analyitics\\.venv\\Scripts\\python.exe \"C:\\Users\\Admin\\github_analyitics\\clone_and_analyze.py\" --output \"C:\\Users\\Admin\\github_analyitics\\github_analysis_with_file_timestamps.xlsx\" --cleanup",
+			"isBackground": false
 		}
 	]
 }

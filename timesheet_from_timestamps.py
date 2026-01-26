@@ -55,23 +55,29 @@ def build_calendar(df: pd.DataFrame, window_minutes: int) -> pd.DataFrame:
     else:
         user_col = "author"
 
+    repo_col = "repository" if "repository" in df.columns else None
+
     rows = []
     window = timedelta(minutes=max(window_minutes, 0))
 
     for _, row in df.iterrows():
         ts = row["event_timestamp"].to_pydatetime()
         user = row.get(user_col, "Unknown")
+        repo = row.get(repo_col) if repo_col else None
         start = ts - window
         end = ts + window
 
         slot = round_to_15(start)
         while slot <= end:
             slot_naive = slot.replace(tzinfo=None)
-            rows.append({
+            record = {
                 "user": user,
                 "date": slot.date().isoformat(),
                 "slot_start": slot_naive,
-            })
+            }
+            if repo_col:
+                record["repository"] = repo
+            rows.append(record)
             slot += timedelta(minutes=15)
 
     calendar = pd.DataFrame(rows).drop_duplicates()
@@ -90,7 +96,18 @@ def build_sessions(calendar: pd.DataFrame) -> pd.DataFrame:
     calendar["slot_start"] = pd.to_datetime(calendar["slot_start"]).dt.tz_localize(None)
 
     sessions = []
-    for user, user_df in calendar.groupby("user"):
+    group_cols = ["user"]
+    if "repository" in calendar.columns:
+        group_cols.append("repository")
+
+    for group_keys, user_df in calendar.groupby(group_cols):
+        if isinstance(group_keys, tuple):
+            user = group_keys[0]
+            repo = group_keys[1] if len(group_keys) > 1 else None
+        else:
+            user = group_keys
+            repo = None
+
         slots = user_df["slot_start"].sort_values().tolist()
         if not slots:
             continue
@@ -102,22 +119,28 @@ def build_sessions(calendar: pd.DataFrame) -> pd.DataFrame:
                 session_end = slot
             else:
                 hours = ((session_end - session_start).total_seconds() / 3600.0) + 0.25
-                sessions.append({
+                record = {
                     "user": user,
                     "session_start": session_start,
                     "session_end": session_end + timedelta(minutes=15),
                     "estimated_hours": round(hours, 2),
-                })
+                }
+                if repo is not None:
+                    record["repository"] = repo
+                sessions.append(record)
                 session_start = slot
                 session_end = slot
 
         hours = ((session_end - session_start).total_seconds() / 3600.0) + 0.25
-        sessions.append({
+        record = {
             "user": user,
             "session_start": session_start,
             "session_end": session_end + timedelta(minutes=15),
             "estimated_hours": round(hours, 2),
-        })
+        }
+        if repo is not None:
+            record["repository"] = repo
+        sessions.append(record)
 
     return pd.DataFrame(sessions)
 
