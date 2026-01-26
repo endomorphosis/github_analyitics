@@ -47,7 +47,7 @@ def check_gh_cli():
         print("Error: gh CLI is not authenticated.")
         print("Please run: gh auth login")
         return False
-    print("✓ gh CLI authenticated")
+    print("[OK] gh CLI authenticated")
     return True
 
 
@@ -55,7 +55,7 @@ def get_username():
     """Get GitHub username from gh CLI."""
     username = run_command("gh api user -q .login")
     if username:
-        print(f"✓ GitHub username: {username}")
+        print(f"[OK] GitHub username: {username}")
         return username
     return None
 
@@ -73,7 +73,7 @@ def list_repositories(username):
     
     import json
     repos = json.loads(output)
-    print(f"✓ Found {len(repos)} repositories")
+    print(f"[OK] Found {len(repos)} repositories")
     return repos
 
 
@@ -124,6 +124,16 @@ def main():
         type=str,
         help='Path to JSON or CSV mapping Copilot identities to invoker usernames'
     )
+    parser.add_argument(
+        '--cleanup',
+        action='store_true',
+        help='Delete temporary clones without prompting'
+    )
+    parser.add_argument(
+        '--no-cleanup',
+        action='store_true',
+        help='Keep temporary clones without prompting'
+    )
 
     args = parser.parse_args()
 
@@ -150,7 +160,7 @@ def main():
     
     # Create temporary directory for bare clones
     temp_dir = Path(tempfile.mkdtemp(prefix=f'github_analysis_{username}_'))
-    print(f"\n✓ Created temporary directory: {temp_dir}")
+    print(f"\n[OK] Created temporary directory: {temp_dir}")
     print()
     
     try:
@@ -173,7 +183,7 @@ def main():
                 failed_repos.append(repo_full_name)
         
         print()
-        print(f"✓ Successfully cloned: {len(cloned_repos)} repositories")
+        print(f"[OK] Successfully cloned: {len(cloned_repos)} repositories")
         if failed_repos:
             print(f"✗ Failed to clone: {len(failed_repos)} repositories")
             for repo in failed_repos:
@@ -200,10 +210,13 @@ def main():
                 return 1
             
             # Run with session-based estimation
+            python_exec = sys.executable
             cmd_parts = [
-                'python', f'"{analytics_script}"', f'"{temp_dir}"',
+                python_exec,
+                str(analytics_script),
+                str(temp_dir),
                 '--use-sessions',
-                '--output', f'"{output_file}"'
+                '--output', output_file
             ]
 
             if args.start_date:
@@ -211,28 +224,36 @@ def main():
             if args.end_date:
                 cmd_parts.extend(['--end-date', args.end_date])
             if args.copilot_invokers:
-                cmd_parts.extend(['--copilot-invokers', f'"{args.copilot_invokers}"'])
+                cmd_parts.extend(['--copilot-invokers', args.copilot_invokers])
 
-            cmd = ' '.join(cmd_parts)
-            print(f"Running: {cmd}")
+            print(f"Running: {' '.join(cmd_parts)}")
             print()
-            
-            run_command(cmd, capture=False)
+
+            subprocess.run(cmd_parts, check=True)
             
             print()
             print("=" * 70)
-            print(f"✓ Analysis complete!")
-            print(f"✓ Report saved to: {output_file}")
+            print(f"[OK] Analysis complete!")
+            print(f"[OK] Report saved to: {output_file}")
             print("=" * 70)
         
     finally:
         # Cleanup
         print()
-        response = input("Delete temporary cloned repositories? [Y/n]: ").strip().lower()
-        if response != 'n':
+        if args.cleanup:
             print(f"Cleaning up temporary directory: {temp_dir}")
             shutil.rmtree(temp_dir, ignore_errors=True)
-            print("✓ Cleanup complete")
+            print("[OK] Cleanup complete")
+        elif args.no_cleanup:
+            print(f"Temporary repositories kept at: {temp_dir}")
+        elif sys.stdin.isatty():
+            response = input("Delete temporary cloned repositories? [Y/n]: ").strip().lower()
+            if response != 'n':
+                print(f"Cleaning up temporary directory: {temp_dir}")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                print("[OK] Cleanup complete")
+            else:
+                print(f"Temporary repositories kept at: {temp_dir}")
         else:
             print(f"Temporary repositories kept at: {temp_dir}")
     
