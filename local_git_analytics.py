@@ -14,7 +14,7 @@ import subprocess
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 
@@ -52,9 +52,25 @@ class LocalGitAnalytics:
                 return True
         return False
 
-    def resolve_invoker(self, author: str, email: str, copilot_involved: bool) -> str:
+    def resolve_invoker_details(
+        self,
+        author: str,
+        email: str,
+        copilot_involved: bool,
+        invoker_override: Optional[str] = None,
+        copilot_identity: Optional[str] = None,
+    ) -> Tuple[str, str]:
         if not copilot_involved:
-            return author
+            return author, 'author'
+
+        if invoker_override:
+            return invoker_override, 'co-author'
+
+        if copilot_identity:
+            identity_key = self.normalize_identity(copilot_identity)
+            mapped = self.copilot_invokers.get(identity_key)
+            if mapped:
+                return mapped, 'mapping'
 
         author_key = self.normalize_identity(author)
         email_key = self.normalize_identity(email)
@@ -62,8 +78,26 @@ class LocalGitAnalytics:
         return (
             self.copilot_invokers.get(author_key)
             or self.copilot_invokers.get(email_key)
-            or author
+            or author,
+            'author'
         )
+
+    @staticmethod
+    def parse_co_authors(message: str) -> List[Tuple[str, str]]:
+        co_authors = []
+        if not message:
+            return co_authors
+        for line in message.splitlines():
+            if not line.lower().startswith('co-authored-by:'):
+                continue
+            _, value = line.split(':', 1)
+            value = value.strip()
+            if '<' in value and value.endswith('>'):
+                name, email = value.rsplit('<', 1)
+                co_authors.append((name.strip(), email[:-1].strip()))
+            else:
+                co_authors.append((value, ''))
+        return co_authors
 
     @staticmethod
     def load_copilot_invokers(path: Optional[str]) -> Dict[str, str]:
@@ -175,7 +209,7 @@ class LocalGitAnalytics:
     
     def get_git_log(self, repo_path: Path, start_date: Optional[datetime] = None, 
                     end_date: Optional[datetime] = None,
-                    copilot_commits: Optional[Set[str]] = None) -> List[Dict]:
+                    copilot_info: Optional[Dict[str, Dict]] = None) -> List[Dict]:
         """
         Get git log data from a repository.
         
@@ -213,13 +247,13 @@ class LocalGitAnalytics:
                 check=True
             )
             
-            return self.parse_git_log(result.stdout, copilot_commits)
+            return self.parse_git_log(result.stdout, copilot_info)
             
         except subprocess.CalledProcessError as e:
             print(f"Warning: Error reading git log from {repo_path.name}: {e}")
             return []
     
-    def parse_git_log(self, log_output: str, copilot_commits: Optional[Set[str]] = None) -> List[Dict]:
+    def parse_git_log(self, log_output: str, copilot_info: Optional[Dict[str, Dict]] = None) -> List[Dict]:
         """
         Parse git log output with numstat.
         
@@ -258,8 +292,13 @@ class LocalGitAnalytics:
                         continue
                     
                     copilot_involved = False
-                    if copilot_commits is not None:
-                        copilot_involved = commit_hash in copilot_commits
+                    invoker_override = None
+                    copilot_identity = None
+                    if copilot_info is not None and commit_hash in copilot_info:
+                        info = copilot_info[commit_hash]
+                        copilot_involved = info.get('copilot_involved', False)
+                        invoker_override = info.get('invoker_override')
+                        copilot_identity = info.get('copilot_identity')
                     if self.is_copilot_identity(author_name, author_email):
                         copilot_involved = True
 
@@ -273,7 +312,9 @@ class LocalGitAnalytics:
                         'additions': 0,
                         'deletions': 0,
                         'files_changed': 0,
-                        'copilot_involved': copilot_involved
+                        'copilot_involved': copilot_involved,
+                        'invoker_override': invoker_override,
+                        'copilot_identity': copilot_identity
                     }
                     
                     # Parse numstat lines (format: additions\tdeletions\tfilename)
@@ -304,7 +345,7 @@ class LocalGitAnalytics:
     
     def get_file_modifications(self, repo_path: Path, start_date: Optional[datetime] = None,
                                end_date: Optional[datetime] = None,
-                               copilot_commits: Optional[Set[str]] = None) -> List[Dict]:
+                               copilot_info: Optional[Dict[str, Dict]] = None) -> List[Dict]:
         """
         Get detailed file modification data from repository commits.
         
@@ -366,8 +407,13 @@ class LocalGitAnalytics:
                             continue
                         
                         copilot_involved = False
-                        if copilot_commits is not None:
-                            copilot_involved = commit_hash in copilot_commits
+                        invoker_override = None
+                        copilot_identity = None
+                        if copilot_info is not None and commit_hash in copilot_info:
+                            info = copilot_info[commit_hash]
+                            copilot_involved = info.get('copilot_involved', False)
+                            invoker_override = info.get('invoker_override')
+                            copilot_identity = info.get('copilot_identity')
                         if self.is_copilot_identity(author, email):
                             copilot_involved = True
 
@@ -392,11 +438,13 @@ class LocalGitAnalytics:
                                         'date': commit_date,
                                         'status': status,
                                         'file': filename,
-                                        'copilot_involved': copilot_involved
+                                        'copilot_involved': copilot_involved,
+                                        'invoker_override': invoker_override,
+                                        'copilot_identity': copilot_identity
                                     })
-                                def get_copilot_commit_hashes(self, repo_path: Path,
-                                                              start_date: Optional[datetime] = None,
-                                                              end_date: Optional[datetime] = None) -> Set[str]:
+                                def get_copilot_commit_info(self, repo_path: Path,
+                                                            start_date: Optional[datetime] = None,
+                                                            end_date: Optional[datetime] = None) -> Dict[str, Dict]:
                                     cmd = [
                                         'git', 'log',
                                         '--all',
@@ -422,7 +470,7 @@ class LocalGitAnalytics:
                                         print(f"Warning: Error reading copilot markers from {repo_path.name}: {e}")
                                         return set()
 
-                                    copilot_commits = set()
+                                    copilot_commits: Dict[str, Dict] = {}
                                     records = result.stdout.split('\x1e')
                                     for record in records:
                                         if not record.strip():
@@ -435,8 +483,27 @@ class LocalGitAnalytics:
                                         author_email = parts[2].strip()
                                         message_body = parts[3]
 
-                                        if self.is_copilot_identity(author_name, author_email) or self.has_copilot_trailer(message_body):
-                                            copilot_commits.add(commit_hash)
+                                        co_authors = self.parse_co_authors(message_body)
+                                        copilot_involved = self.is_copilot_identity(author_name, author_email)
+                                        copilot_identity = author_email or author_name
+                                        invoker_override = None
+
+                                        for name, email in co_authors:
+                                            if self.is_copilot_identity(name, email):
+                                                copilot_involved = True
+                                                copilot_identity = email or name
+                                            elif not invoker_override:
+                                                invoker_override = name
+
+                                        if self.has_copilot_trailer(message_body):
+                                            copilot_involved = True
+
+                                        if copilot_involved:
+                                            copilot_commits[commit_hash] = {
+                                                'copilot_involved': copilot_involved,
+                                                'invoker_override': invoker_override,
+                                                'copilot_identity': copilot_identity
+                                            }
 
                                     return copilot_commits
                             
@@ -520,9 +587,9 @@ class LocalGitAnalytics:
             'commit_times': []
         }))
         
-        copilot_commits = self.get_copilot_commit_hashes(repo_path, start_date, end_date)
-        commits = self.get_git_log(repo_path, start_date, end_date, copilot_commits)
-        modifications = self.get_file_modifications(repo_path, start_date, end_date, copilot_commits)
+        copilot_info = self.get_copilot_commit_info(repo_path, start_date, end_date)
+        commits = self.get_git_log(repo_path, start_date, end_date, copilot_info)
+        modifications = self.get_file_modifications(repo_path, start_date, end_date, copilot_info)
         
         # Track commits
         for commit in commits:
@@ -530,7 +597,15 @@ class LocalGitAnalytics:
             email = commit['email']
             date_key = commit['date'].strftime('%Y-%m-%d')
             copilot_involved = commit.get('copilot_involved', False)
-            attributed_user = self.resolve_invoker(author, email, copilot_involved)
+            invoker_override = commit.get('invoker_override')
+            copilot_identity = commit.get('copilot_identity')
+            attributed_user, invoker_source = self.resolve_invoker_details(
+                author,
+                email,
+                copilot_involved,
+                invoker_override,
+                copilot_identity
+            )
             
             data[attributed_user][date_key]['commits'] += 1
             data[attributed_user][date_key]['additions'] += commit['additions']
@@ -544,6 +619,7 @@ class LocalGitAnalytics:
                     'author': author,
                     'attributed_user': attributed_user,
                     'copilot_involved': copilot_involved,
+                    'invoker_source': invoker_source,
                     'email': email,
                     'event_timestamp': commit['date'].isoformat(),
                     'commit': commit['hash'],
@@ -556,7 +632,15 @@ class LocalGitAnalytics:
             email = mod['email']
             date_key = mod['date'].strftime('%Y-%m-%d')
             copilot_involved = mod.get('copilot_involved', False)
-            attributed_user = self.resolve_invoker(author, email, copilot_involved)
+            invoker_override = mod.get('invoker_override')
+            copilot_identity = mod.get('copilot_identity')
+            attributed_user, invoker_source = self.resolve_invoker_details(
+                author,
+                email,
+                copilot_involved,
+                invoker_override,
+                copilot_identity
+            )
             
             # Track unique files modified
             data[attributed_user][date_key]['files_modified'].add(mod['file'])
@@ -567,6 +651,7 @@ class LocalGitAnalytics:
                     'author': author,
                     'attributed_user': attributed_user,
                     'copilot_involved': copilot_involved,
+                    'invoker_source': invoker_source,
                     'email': email,
                     'event_timestamp': mod['date'].isoformat(),
                     'status': mod['status'],

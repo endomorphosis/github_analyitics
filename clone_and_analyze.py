@@ -99,6 +99,34 @@ def clone_bare_repository(repo_full_name, target_dir):
 
 def main():
     """Main function."""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='Clone repositories with gh and run local git analytics.'
+    )
+    parser.add_argument(
+        '--start-date',
+        type=str,
+        help='Start date for analysis (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--end-date',
+        type=str,
+        help='End date for analysis (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--output',
+        type=str,
+        help='Output file path (default: github_analysis_{username}_{timestamp}.xlsx)'
+    )
+    parser.add_argument(
+        '--copilot-invokers',
+        type=str,
+        help='Path to JSON or CSV mapping Copilot identities to invoker usernames'
+    )
+
+    args = parser.parse_args()
+
     print("=" * 70)
     print("GitHub Repository Analyzer")
     print("=" * 70)
@@ -161,7 +189,7 @@ def main():
             
             # Generate output filename
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_file = f'github_analysis_{username}_{timestamp}.xlsx'
+            output_file = args.output or f'github_analysis_{username}_{timestamp}.xlsx'
             
             # Run local_git_analytics.py
             script_dir = Path(__file__).parent
@@ -172,7 +200,20 @@ def main():
                 return 1
             
             # Run with session-based estimation
-            cmd = f'python "{analytics_script}" "{temp_dir}" --use-sessions --output "{output_file}"'
+            cmd_parts = [
+                'python', f'"{analytics_script}"', f'"{temp_dir}"',
+                '--use-sessions',
+                '--output', f'"{output_file}"'
+            ]
+
+            if args.start_date:
+                cmd_parts.extend(['--start-date', args.start_date])
+            if args.end_date:
+                cmd_parts.extend(['--end-date', args.end_date])
+            if args.copilot_invokers:
+                cmd_parts.extend(['--copilot-invokers', f'"{args.copilot_invokers}"'])
+
+            cmd = ' '.join(cmd_parts)
             print(f"Running: {cmd}")
             print()
             
