@@ -37,6 +37,7 @@ class GitHubAnalytics:
         self.api_calls_made = 0
         self.backoff_time = 1  # Initial backoff time in seconds
         self.last_rate_limit_check = 0.0
+        self.commit_events: List[Dict] = []
         self.pr_events: List[Dict] = []
         self.issue_events: List[Dict] = []
 
@@ -202,10 +203,23 @@ class GitHubAnalytics:
                     
                     # Get author information
                     author = commit.author.login if commit.author else commit.commit.author.name
+                    author_email = commit.commit.author.email if commit.commit.author else ""
                     date_key = commit_date.strftime('%Y-%m-%d')
                     
                     # Update statistics
                     data[author][date_key]['commits'] += 1
+
+                    if self.commit_events is not None:
+                        repo_full_name = getattr(repo, 'full_name', repo.name)
+                        self.commit_events.append({
+                            'repository': repo_full_name,
+                            'commit': commit.sha,
+                            'author': author,
+                            'email': author_email,
+                            'event_type': 'commit',
+                            'event_timestamp': commit_date.isoformat(),
+                            'subject': commit.commit.message.splitlines()[0] if commit.commit.message else ""
+                        })
                     
                     # Get file statistics
                     if include_stats:
@@ -637,6 +651,7 @@ class GitHubAnalytics:
 
         print(f"Fetching repositories for user: {self.username}")
 
+        self.commit_events = []
         self.pr_events = []
         self.issue_events = []
         
@@ -844,8 +859,14 @@ class GitHubAnalytics:
                 issue_events_df = issue_events_df.sort_values('event_timestamp', ascending=False)
                 issue_events_df.to_excel(writer, sheet_name='Issue Events', index=False)
 
-            if self.pr_events or self.issue_events:
+            if self.commit_events or self.pr_events or self.issue_events:
                 timeline_events = []
+                if self.commit_events:
+                    for event in self.commit_events:
+                        timeline_events.append({
+                            'event_type': 'commit',
+                            **event
+                        })
                 if self.pr_events:
                     for event in self.pr_events:
                         timeline_events.append({
