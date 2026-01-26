@@ -109,7 +109,7 @@ python github_analytics.py --help
 
 ## Output
 
-The generated Excel file contains five sheets:
+The generated Excel file contains six sheets:
 
 ### 1. Detailed Report
 Daily breakdown per user including:
@@ -144,6 +144,9 @@ Timestamped pull request events (created/closed/merged) with repository, PR numb
 
 ### 5. Issue Events
 Timestamped issue events (created/closed/comments) with repository, issue number, author, and URL.
+
+### 6. User Timeline
+Unified timestamped activity across PR and issue events.
 
 ## Metrics Explained
 

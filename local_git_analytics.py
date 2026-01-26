@@ -31,6 +31,7 @@ class LocalGitAnalytics:
         """
         self.base_path = Path(base_path).resolve()
         self.file_events: List[Dict] = []
+        self.commit_events: List[Dict] = []
         self.copilot_invokers = self.load_copilot_invokers(copilot_invokers_path)
 
     @staticmethod
@@ -536,6 +537,18 @@ class LocalGitAnalytics:
             data[attributed_user][date_key]['deletions'] += commit['deletions']
             data[attributed_user][date_key]['total_changes'] += commit['additions'] + commit['deletions']
             data[attributed_user][date_key]['commit_times'].append({'date': commit['date']})
+
+            if self.commit_events is not None:
+                self.commit_events.append({
+                    'repository': repo_path.name,
+                    'author': author,
+                    'attributed_user': attributed_user,
+                    'copilot_involved': copilot_involved,
+                    'email': email,
+                    'event_timestamp': commit['date'].isoformat(),
+                    'commit': commit['hash'],
+                    'subject': commit['subject']
+                })
         
         # Track file modifications
         for mod in modifications:
@@ -628,6 +641,7 @@ class LocalGitAnalytics:
         """
         # Find all repositories
         self.file_events = []
+        self.commit_events = []
         repos = self.find_git_repositories(max_depth)
         
         # Filter repositories
@@ -776,6 +790,29 @@ class LocalGitAnalytics:
                 file_events_df = pd.DataFrame(self.file_events)
                 file_events_df = file_events_df.sort_values('event_timestamp', ascending=False)
                 file_events_df.to_excel(writer, sheet_name='File Events', index=False)
+
+            if self.commit_events:
+                commit_events_df = pd.DataFrame(self.commit_events)
+                commit_events_df = commit_events_df.sort_values('event_timestamp', ascending=False)
+                commit_events_df.to_excel(writer, sheet_name='Commit Events', index=False)
+
+            if self.commit_events or self.file_events:
+                combined_events: List[Dict] = []
+                if self.commit_events:
+                    for event in self.commit_events:
+                        combined_events.append({
+                            'event_type': 'commit',
+                            **event
+                        })
+                if self.file_events:
+                    for event in self.file_events:
+                        combined_events.append({
+                            'event_type': 'file',
+                            **event
+                        })
+                timeline_df = pd.DataFrame(combined_events)
+                timeline_df = timeline_df.sort_values('event_timestamp', ascending=False)
+                timeline_df.to_excel(writer, sheet_name='User Timeline', index=False)
         
         print(f"\n{'='*60}")
         print(f"Report generated successfully: {output_file}")

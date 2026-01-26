@@ -843,6 +843,24 @@ class GitHubAnalytics:
                 issue_events_df = pd.DataFrame(self.issue_events)
                 issue_events_df = issue_events_df.sort_values('event_timestamp', ascending=False)
                 issue_events_df.to_excel(writer, sheet_name='Issue Events', index=False)
+
+            if self.pr_events or self.issue_events:
+                timeline_events = []
+                if self.pr_events:
+                    for event in self.pr_events:
+                        timeline_events.append({
+                            'event_type': 'pull_request',
+                            **event
+                        })
+                if self.issue_events:
+                    for event in self.issue_events:
+                        timeline_events.append({
+                            'event_type': 'issue',
+                            **event
+                        })
+                timeline_df = pd.DataFrame(timeline_events)
+                timeline_df = timeline_df.sort_values('event_timestamp', ascending=False)
+                timeline_df.to_excel(writer, sheet_name='User Timeline', index=False)
         
         print(f"\nReport generated successfully: {output_file}")
         print(f"Total users: {df['user'].nunique()}")

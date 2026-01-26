@@ -59,7 +59,7 @@ python github_analytics.py \
 
 ## Understanding the Report
 
-The generated Excel file contains five sheets:
+The generated Excel file contains six sheets:
 
 ### Sheet 1: Detailed Report
 
@@ -99,6 +99,9 @@ Timestamped pull request events (created/closed/merged), including repository, P
 
 ### Sheet 5: Issue Events
 Timestamped issue events (created/closed/comments), including repository, issue number, author, and URL.
+
+### Sheet 6: User Timeline
+Unified timestamped activity across PR and issue events.
 
 ## Metrics Explained
 
