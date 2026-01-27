@@ -442,70 +442,6 @@ class LocalGitAnalytics:
                                         'invoker_override': invoker_override,
                                         'copilot_identity': copilot_identity
                                     })
-                                def get_copilot_commit_info(self, repo_path: Path,
-                                                            start_date: Optional[datetime] = None,
-                                                            end_date: Optional[datetime] = None) -> Dict[str, Dict]:
-                                    cmd = [
-                                        'git', 'log',
-                                        '--all',
-                                        '--pretty=format:%H%x1f%an%x1f%ae%x1f%B%x1e',
-                                    ]
-
-                                    if start_date:
-                                        cmd.append(f'--since={start_date.isoformat()}')
-                                    if end_date:
-                                        cmd.append(f'--until={end_date.isoformat()}')
-
-                                    try:
-                                        result = subprocess.run(
-                                            cmd,
-                                            cwd=repo_path,
-                                            capture_output=True,
-                                            text=True,
-                                            encoding='utf-8',
-                                            errors='replace',
-                                            check=True
-                                        )
-                                    except subprocess.CalledProcessError as e:
-                                        print(f"Warning: Error reading copilot markers from {repo_path.name}: {e}")
-                                        return set()
-
-                                    copilot_commits: Dict[str, Dict] = {}
-                                    records = result.stdout.split('\x1e')
-                                    for record in records:
-                                        if not record.strip():
-                                            continue
-                                        parts = record.split('\x1f')
-                                        if len(parts) < 4:
-                                            continue
-                                        commit_hash = parts[0].strip()
-                                        author_name = parts[1].strip()
-                                        author_email = parts[2].strip()
-                                        message_body = parts[3]
-
-                                        co_authors = self.parse_co_authors(message_body)
-                                        copilot_involved = self.is_copilot_identity(author_name, author_email)
-                                        copilot_identity = author_email or author_name
-                                        invoker_override = None
-
-                                        for name, email in co_authors:
-                                            if self.is_copilot_identity(name, email):
-                                                copilot_involved = True
-                                                copilot_identity = email or name
-                                            elif not invoker_override:
-                                                invoker_override = name
-
-                                        if self.has_copilot_trailer(message_body):
-                                            copilot_involved = True
-
-                                        if copilot_involved:
-                                            copilot_commits[commit_hash] = {
-                                                'copilot_involved': copilot_involved,
-                                                'invoker_override': invoker_override,
-                                                'copilot_identity': copilot_identity
-                                            }
-
-                                    return copilot_commits
                             
                             i += 1
                         continue
@@ -517,6 +453,71 @@ class LocalGitAnalytics:
         except subprocess.CalledProcessError as e:
             print(f"Warning: Error reading file modifications from {repo_path.name}: {e}")
             return []
+
+    def get_copilot_commit_info(self, repo_path: Path,
+                                start_date: Optional[datetime] = None,
+                                end_date: Optional[datetime] = None) -> Dict[str, Dict]:
+        cmd = [
+            'git', 'log',
+            '--all',
+            '--pretty=format:%H%x1f%an%x1f%ae%x1f%B%x1e',
+        ]
+
+        if start_date:
+            cmd.append(f'--since={start_date.isoformat()}')
+        if end_date:
+            cmd.append(f'--until={end_date.isoformat()}')
+
+        try:
+            result = subprocess.run(
+                cmd,
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                encoding='utf-8',
+                errors='replace',
+                check=True
+            )
+        except subprocess.CalledProcessError as e:
+            print(f"Warning: Error reading copilot markers from {repo_path.name}: {e}")
+            return {}
+
+        copilot_commits: Dict[str, Dict] = {}
+        records = result.stdout.split('\x1e')
+        for record in records:
+            if not record.strip():
+                continue
+            parts = record.split('\x1f')
+            if len(parts) < 4:
+                continue
+            commit_hash = parts[0].strip()
+            author_name = parts[1].strip()
+            author_email = parts[2].strip()
+            message_body = parts[3]
+
+            co_authors = self.parse_co_authors(message_body)
+            copilot_involved = self.is_copilot_identity(author_name, author_email)
+            copilot_identity = author_email or author_name
+            invoker_override = None
+
+            for name, email in co_authors:
+                if self.is_copilot_identity(name, email):
+                    copilot_involved = True
+                    copilot_identity = email or name
+                elif not invoker_override:
+                    invoker_override = name
+
+            if self.has_copilot_trailer(message_body):
+                copilot_involved = True
+
+            if copilot_involved:
+                copilot_commits[commit_hash] = {
+                    'copilot_involved': copilot_involved,
+                    'invoker_override': invoker_override,
+                    'copilot_identity': copilot_identity
+                }
+
+        return copilot_commits
     
     def estimate_hours_from_sessions(self, commits: List[Dict]) -> float:
         """

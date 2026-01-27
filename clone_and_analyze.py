@@ -9,7 +9,6 @@ Uses gh CLI for authentication and clones repos as bare repositories
 import os
 import sys
 import subprocess
-import tempfile
 import shutil
 from pathlib import Path
 from datetime import datetime
@@ -81,10 +80,10 @@ def clone_bare_repository(repo_full_name, target_dir):
     """Clone a repository as a bare repository (git history only)."""
     repo_name = repo_full_name.split('/')[-1]
     target_path = target_dir / repo_name
-    
+
     # Clone as bare repository (no working files, just git data)
     cmd = f'gh repo clone {repo_full_name} "{target_path}" -- --bare --no-tags'
-    
+
     print(f"  Cloning {repo_name} (bare, no tags)...")
     for attempt in range(1, 4):
         run_command(cmd, capture=False)
@@ -95,6 +94,14 @@ def clone_bare_repository(repo_full_name, target_dir):
             shutil.rmtree(target_path, ignore_errors=True)
         print(f"  Retry {attempt}/3 failed for {repo_name}")
     return None
+
+
+def update_bare_repository(repo_path: Path) -> bool:
+    """Fetch latest data for an existing bare repository."""
+    cmd = f'git -C "{repo_path}" fetch --all --prune --no-tags'
+    print(f"  Fetching updates for {repo_path.name}...")
+    result = run_command(cmd, capture=False)
+    return result is None or result == ''
 
 
 def main():
@@ -118,6 +125,11 @@ def main():
         '--output',
         type=str,
         help='Output file path (default: github_analysis_{username}_{timestamp}.xlsx)'
+    )
+    parser.add_argument(
+        '--cache-dir',
+        type=str,
+        help='Directory to store/reuse bare repositories (default: .cache/github_analysis_{username})'
     )
     parser.add_argument(
         '--copilot-invokers',
@@ -158,15 +170,18 @@ def main():
         print("Error: No repositories found or could not fetch repository list")
         return 1
     
-    # Create temporary directory for bare clones
-    temp_dir = Path(tempfile.mkdtemp(prefix=f'github_analysis_{username}_'))
-    print(f"\n[OK] Created temporary directory: {temp_dir}")
+    # Create/reuse cache directory for bare clones
+    script_dir = Path(__file__).parent
+    default_cache = script_dir / '.cache' / f'github_analysis_{username}'
+    cache_dir = Path(args.cache_dir).expanduser().resolve() if args.cache_dir else default_cache
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    print(f"\n[OK] Using repository cache directory: {cache_dir}")
     print()
     
     try:
         # Clone repositories
         print("=" * 70)
-        print("Cloning repositories (bare - git history only)...")
+        print("Syncing repositories (bare - git history only)...")
         print("=" * 70)
         
         cloned_repos = []
@@ -176,7 +191,17 @@ def main():
             repo_full_name = repo['nameWithOwner']
             print(f"[{idx}/{len(repos)}] {repo_full_name}")
             
-            repo_path = clone_bare_repository(repo_full_name, temp_dir)
+            repo_name = repo_full_name.split('/')[-1]
+            repo_path = cache_dir / repo_name
+            if repo_path.exists():
+                updated = update_bare_repository(repo_path)
+                if updated:
+                    cloned_repos.append(repo_path)
+                else:
+                    failed_repos.append(repo_full_name)
+                continue
+
+            repo_path = clone_bare_repository(repo_full_name, cache_dir)
             if repo_path:
                 cloned_repos.append(repo_path)
             else:
@@ -202,7 +227,6 @@ def main():
             output_file = args.output or f'github_analysis_{username}_{timestamp}.xlsx'
             
             # Run local_git_analytics.py
-            script_dir = Path(__file__).parent
             analytics_script = script_dir / 'local_git_analytics.py'
             
             if not analytics_script.exists():
@@ -214,7 +238,7 @@ def main():
             cmd_parts = [
                 python_exec,
                 str(analytics_script),
-                str(temp_dir),
+                str(cache_dir),
                 '--use-sessions',
                 '--output', output_file
             ]
@@ -241,21 +265,11 @@ def main():
         # Cleanup
         print()
         if args.cleanup:
-            print(f"Cleaning up temporary directory: {temp_dir}")
-            shutil.rmtree(temp_dir, ignore_errors=True)
+            print(f"Cleaning up repository cache directory: {cache_dir}")
+            shutil.rmtree(cache_dir, ignore_errors=True)
             print("[OK] Cleanup complete")
-        elif args.no_cleanup:
-            print(f"Temporary repositories kept at: {temp_dir}")
-        elif sys.stdin.isatty():
-            response = input("Delete temporary cloned repositories? [Y/n]: ").strip().lower()
-            if response != 'n':
-                print(f"Cleaning up temporary directory: {temp_dir}")
-                shutil.rmtree(temp_dir, ignore_errors=True)
-                print("[OK] Cleanup complete")
-            else:
-                print(f"Temporary repositories kept at: {temp_dir}")
         else:
-            print(f"Temporary repositories kept at: {temp_dir}")
+            print(f"Repository cache kept at: {cache_dir}")
     
     return 0
 
