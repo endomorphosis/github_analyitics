@@ -15,6 +15,7 @@ import pandas as pd
 
 
 SHEET_PREFERENCE = [
+    "File Timestamp List",
     "User Timeline",
     "Commit Events",
     "File Events",
@@ -43,7 +44,7 @@ def round_to_15(dt: datetime) -> datetime:
     return dt.replace(minute=minute, second=0, microsecond=0)
 
 
-def build_calendar(df: pd.DataFrame, window_minutes: int) -> pd.DataFrame:
+def build_calendar(df: pd.DataFrame, lookback_minutes: int, forward_minutes: int) -> pd.DataFrame:
     df = df.copy()
     df = df.dropna(subset=["event_timestamp"])
     df["event_timestamp"] = pd.to_datetime(df["event_timestamp"], utc=True)
@@ -58,14 +59,15 @@ def build_calendar(df: pd.DataFrame, window_minutes: int) -> pd.DataFrame:
     repo_col = "repository" if "repository" in df.columns else None
 
     rows = []
-    window = timedelta(minutes=max(window_minutes, 0))
+    lookback = timedelta(minutes=max(lookback_minutes, 0))
+    forward = timedelta(minutes=max(forward_minutes, 0))
 
     for _, row in df.iterrows():
         ts = row["event_timestamp"].to_pydatetime()
         user = row.get(user_col, "Unknown")
         repo = row.get(repo_col) if repo_col else None
-        start = ts - window
-        end = ts + window
+        start = ts - lookback
+        end = ts + forward
 
         slot = round_to_15(start)
         while slot <= end:
@@ -150,8 +152,12 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="Path to timestamps report (.xlsx)")
     parser.add_argument("--output", required=True, help="Output Excel file")
     parser.add_argument("--sheet", help="Optional sheet name to read")
-    parser.add_argument("--window-minutes", type=int, default=0,
-                        help="Minutes to expand around each timestamp (default: 0)")
+    parser.add_argument("--window-minutes", type=int, default=None,
+                        help="Minutes to expand around each timestamp (symmetric, legacy)")
+    parser.add_argument("--lookback-minutes", type=int, default=15,
+                        help="Minutes before each timestamp to include (default: 15)")
+    parser.add_argument("--forward-minutes", type=int, default=0,
+                        help="Minutes after each timestamp to include (default: 0)")
     parser.add_argument("--user", help="Optional single user filter")
 
     args = parser.parse_args()
@@ -166,7 +172,10 @@ def main() -> None:
                 df = df[df[col] == args.user]
                 break
 
-    calendar = build_calendar(df, args.window_minutes)
+    if args.window_minutes is not None:
+        calendar = build_calendar(df, args.window_minutes, args.window_minutes)
+    else:
+        calendar = build_calendar(df, args.lookback_minutes, args.forward_minutes)
     sessions = build_sessions(calendar)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:

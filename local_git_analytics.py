@@ -21,18 +21,36 @@ import pandas as pd
 class LocalGitAnalytics:
     """Analyzes local git repositories without using the GitHub API."""
     
-    def __init__(self, base_path: str, copilot_invokers_path: Optional[str] = None):
+    def __init__(
+        self,
+        base_path: str,
+        copilot_invokers_path: Optional[str] = None,
+        allowed_users: Optional[Set[str]] = None
+    ):
         """
         Initialize Local Git Analytics.
         
         Args:
             base_path: Base directory to search for git repositories
             copilot_invokers_path: Optional mapping file for Copilot invokers
+            allowed_users: Optional set of allowed usernames (lowercased)
         """
         self.base_path = Path(base_path).resolve()
         self.file_events: List[Dict] = []
         self.commit_events: List[Dict] = []
         self.copilot_invokers = self.load_copilot_invokers(copilot_invokers_path)
+        self.allowed_users = {u.lower() for u in allowed_users} if allowed_users else None
+
+    def is_allowed_user(self, attributed_user: str, author: str, email: str) -> bool:
+        if self.allowed_users is None:
+            return True
+
+        candidates = {
+            self.normalize_identity(attributed_user),
+            self.normalize_identity(author),
+            self.normalize_identity(email)
+        }
+        return any(candidate in self.allowed_users for candidate in candidates if candidate)
 
     @staticmethod
     def normalize_identity(value: Optional[str]) -> str:
@@ -132,6 +150,27 @@ class LocalGitAnalytics:
             print(f"Warning: Unsupported copilot invoker mapping format: {mapping_path.suffix}")
 
         return invokers
+
+    @staticmethod
+    def load_allowed_users(path: Optional[str]) -> Optional[Set[str]]:
+        if not path:
+            return None
+
+        users_path = Path(path)
+        if not users_path.exists():
+            return None
+
+        users: Set[str] = set()
+        with users_path.open('r', encoding='utf-8') as handle:
+            for line in handle:
+                value = line.strip()
+                if not value or value.startswith('#'):
+                    continue
+                if value.isdigit():
+                    continue
+                users.add(value.lower())
+
+        return users or None
         
     @staticmethod
     def estimate_hours_from_commits(commits_count: int, lines_changed: int) -> float:
@@ -429,7 +468,10 @@ class LocalGitAnalytics:
                                 parts = file_line.split('\t')
                                 if len(parts) >= 2:
                                     status = parts[0]
-                                    filename = parts[1]
+                                    if status.startswith('R') or status.startswith('C'):
+                                        filename = parts[-1]
+                                    else:
+                                        filename = parts[1]
                                     
                                     modifications.append({
                                         'commit': commit_hash,
@@ -565,8 +607,9 @@ class LocalGitAnalytics:
         return round(sum(sessions), 2)
     
     def analyze_repository(self, repo_path: Path, start_date: Optional[datetime] = None,
-                          end_date: Optional[datetime] = None, 
-                          use_session_estimation: bool = False) -> Dict:
+                          end_date: Optional[datetime] = None,
+                          use_session_estimation: bool = False,
+                          allowed_users: Optional[Set[str]] = None) -> Dict:
         """
         Analyze a single git repository.
         
@@ -607,6 +650,9 @@ class LocalGitAnalytics:
                 invoker_override,
                 copilot_identity
             )
+
+            if not self.is_allowed_user(attributed_user, author, email):
+                continue
             
             data[attributed_user][date_key]['commits'] += 1
             data[attributed_user][date_key]['additions'] += commit['additions']
@@ -619,6 +665,7 @@ class LocalGitAnalytics:
                     'repository': repo_path.name,
                     'author': author,
                     'attributed_user': attributed_user,
+                    'user': attributed_user,
                     'copilot_involved': copilot_involved,
                     'invoker_source': invoker_source,
                     'email': email,
@@ -642,6 +689,9 @@ class LocalGitAnalytics:
                 invoker_override,
                 copilot_identity
             )
+
+            if not self.is_allowed_user(attributed_user, author, email):
+                continue
             
             # Track unique files modified
             data[attributed_user][date_key]['files_modified'].add(mod['file'])
@@ -651,12 +701,14 @@ class LocalGitAnalytics:
                     'repository': repo_path.name,
                     'author': author,
                     'attributed_user': attributed_user,
+                    'user': attributed_user,
                     'copilot_involved': copilot_involved,
                     'invoker_source': invoker_source,
                     'email': email,
                     'event_timestamp': mod['date'].isoformat(),
                     'status': mod['status'],
-                    'file': mod['file']
+                    'file': mod['file'],
+                    'commit': mod['commit']
                 })
         
         # Convert sets to counts and calculate session-based hours if requested
@@ -710,7 +762,8 @@ class LocalGitAnalytics:
                                  include_repos: Optional[List[str]] = None,
                                  exclude_repos: Optional[List[str]] = None,
                                  max_depth: int = 5,
-                                 use_session_estimation: bool = False) -> pd.DataFrame:
+                                 use_session_estimation: bool = False,
+                                 allowed_users: Optional[Set[str]] = None) -> pd.DataFrame:
         """
         Analyze all git repositories found under the base path.
         
@@ -756,7 +809,13 @@ class LocalGitAnalytics:
             print(f"[{idx}/{len(filtered_repos)}] Analyzing: {repo.name}")
             
             try:
-                repo_data = self.analyze_repository(repo, start_date, end_date, use_session_estimation)
+                repo_data = self.analyze_repository(
+                    repo,
+                    start_date,
+                    end_date,
+                    use_session_estimation,
+                    allowed_users
+                )
                 
                 # Merge into all_data
                 for user, dates in repo_data.items():
@@ -809,7 +868,8 @@ class LocalGitAnalytics:
                        include_repos: Optional[List[str]] = None,
                        exclude_repos: Optional[List[str]] = None,
                        max_depth: int = 5,
-                       use_session_estimation: bool = False):
+                       use_session_estimation: bool = False,
+                       allowed_users: Optional[Set[str]] = None):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -829,7 +889,8 @@ class LocalGitAnalytics:
             include_repos,
             exclude_repos,
             max_depth,
-            use_session_estimation
+            use_session_estimation,
+            allowed_users
         )
         
         if df.empty:
@@ -876,6 +937,18 @@ class LocalGitAnalytics:
                 file_events_df = pd.DataFrame(self.file_events)
                 file_events_df = file_events_df.sort_values('event_timestamp', ascending=False)
                 file_events_df.to_excel(writer, sheet_name='File Events', index=False)
+
+                file_timestamp_columns = [
+                    'repository',
+                    'file',
+                    'event_timestamp',
+                    'user',
+                    'commit',
+                    'status'
+                ]
+                available_columns = [c for c in file_timestamp_columns if c in file_events_df.columns]
+                file_timestamp_df = file_events_df[available_columns]
+                file_timestamp_df.to_excel(writer, sheet_name='File Timestamp List', index=False)
 
             if self.commit_events:
                 commit_events_df = pd.DataFrame(self.commit_events)
@@ -964,6 +1037,16 @@ def main():
         type=str,
         help='Path to JSON or CSV mapping Copilot identities to invoker usernames'
     )
+    parser.add_argument(
+        '--allowed-users-file',
+        type=str,
+        help='Path to allowed users list (one username per line)'
+    )
+    parser.add_argument(
+        '--include-all-authors',
+        action='store_true',
+        help='Do not filter authors by allowed users list'
+    )
     
     args = parser.parse_args()
     
@@ -1003,8 +1086,18 @@ def main():
     print("=" * 60)
     print()
     
+    # Resolve allowed users
+    allowed_users = None
+    if not args.include_all_authors:
+        script_dir = Path(__file__).parent
+        default_allowed_file = script_dir / '_allowed_users.txt'
+        allowed_file = args.allowed_users_file or (str(default_allowed_file) if default_allowed_file.exists() else None)
+        allowed_users = LocalGitAnalytics.load_allowed_users(allowed_file)
+        if allowed_users:
+            print(f"Filtering to allowed users: {', '.join(sorted(allowed_users))}")
+
     # Create analytics instance
-    analytics = LocalGitAnalytics(args.base_path, args.copilot_invokers)
+    analytics = LocalGitAnalytics(args.base_path, args.copilot_invokers, allowed_users)
     
     # Generate report
     analytics.generate_report(
@@ -1014,7 +1107,8 @@ def main():
         include_repos,
         exclude_repos,
         args.max_depth,
-        args.use_sessions
+        args.use_sessions,
+        allowed_users
     )
 
 
