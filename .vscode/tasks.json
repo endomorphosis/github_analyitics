@@ -72,6 +72,19 @@
 			"type": "shell",
 			"command": "C:\\Users\\Admin\\github_analyitics\\.venv\\Scripts\\python.exe \"C:\\Users\\Admin\\github_analyitics\\clone_and_analyze.py\" --output \"C:\\Users\\Admin\\github_analyitics\\github_analysis_with_file_timestamps.xlsx\" --cleanup",
 			"isBackground": false
+		},
+		{
+			"label": "Clone and analyze cached repos",
+			"type": "shell",
+			"command": "C:\\Users\\Admin\\github_analyitics\\.venv\\Scripts\\python.exe",
+			"args": [
+				"C:\\Users\\Admin\\github_analyitics\\clone_and_analyze.py",
+				"--output",
+				"C:\\Users\\Admin\\github_analyitics\\github_analysis_with_file_timestamps.xlsx"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": ""
 		}
 	]
 }
