@@ -14,8 +14,20 @@ import subprocess
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 import pandas as pd
+
+
+DEFAULT_WORKING_TREE_EXCLUDES = {
+    ".git",
+    ".hg",
+    ".svn",
+    ".venv",
+    "node_modules",
+    "dist",
+    "build",
+    "__pycache__",
+}
 
 
 class LocalGitAnalytics:
@@ -245,6 +257,64 @@ class LocalGitAnalytics:
         print(f"Found {len(repos)} git repositories")
         
         return repos
+
+    @staticmethod
+    def iter_working_tree_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
+        exclude_set = set(excludes)
+        for root, dirs, files in os.walk(repo_root):
+            dirs[:] = [d for d in dirs if d not in exclude_set]
+            for name in files:
+                if name.startswith('.'):
+                    continue
+                yield Path(root) / name
+
+    def collect_working_tree_file_events(
+        self,
+        repo_path: Path,
+        working_tree_user: str,
+        excludes: Iterable[str],
+    ) -> None:
+        """Append file mtime events from a non-bare working tree into self.file_events.
+
+        This is meant for time-tracking: it captures filesystem modification timestamps
+        (mtime) for files currently present in the working directory.
+        """
+        git_dir = repo_path / '.git'
+        if not git_dir.exists() or not git_dir.is_dir():
+            # Bare repos have no working tree files; skip.
+            return
+
+        user = (working_tree_user or '').strip() or 'Unknown'
+        if not self.is_allowed_user(user, user, ''):
+            return
+
+        for path in self.iter_working_tree_files(repo_path, excludes):
+            try:
+                stat = path.stat()
+            except (OSError, FileNotFoundError):
+                continue
+
+            mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+            try:
+                rel_path = str(path.relative_to(repo_path)).replace('\\', '/')
+            except Exception:
+                rel_path = str(path).replace('\\', '/')
+
+            if self.file_events is not None:
+                self.file_events.append({
+                    'repository': repo_path.name,
+                    'author': user,
+                    'attributed_user': user,
+                    'user': user,
+                    'copilot_involved': False,
+                    'invoker_source': 'working_tree',
+                    'email': '',
+                    'event_timestamp': mtime.isoformat(),
+                    'status': 'WT',
+                    'file': rel_path,
+                    'commit': None,
+                    'source': 'working_tree',
+                })
     
     def get_git_log(self, repo_path: Path, start_date: Optional[datetime] = None, 
                     end_date: Optional[datetime] = None,
@@ -763,7 +833,10 @@ class LocalGitAnalytics:
                                  exclude_repos: Optional[List[str]] = None,
                                  max_depth: int = 5,
                                  use_session_estimation: bool = False,
-                                 allowed_users: Optional[Set[str]] = None) -> pd.DataFrame:
+                                 allowed_users: Optional[Set[str]] = None,
+                                 include_working_tree_timestamps: bool = False,
+                                 working_tree_user: Optional[str] = None,
+                                 working_tree_excludes: Optional[List[str]] = None) -> pd.DataFrame:
         """
         Analyze all git repositories found under the base path.
         
@@ -816,6 +889,17 @@ class LocalGitAnalytics:
                     use_session_estimation,
                     allowed_users
                 )
+
+                if include_working_tree_timestamps:
+                    excludes = sorted(set(DEFAULT_WORKING_TREE_EXCLUDES).union(working_tree_excludes or []))
+                    inferred_user = (
+                        working_tree_user
+                        or os.getenv('GITHUB_USERNAME')
+                        or os.getenv('GITHUB_USER')
+                        or os.getenv('USER')
+                        or 'Unknown'
+                    )
+                    self.collect_working_tree_file_events(repo, inferred_user, excludes)
                 
                 # Merge into all_data
                 for user, dates in repo_data.items():
@@ -869,7 +953,10 @@ class LocalGitAnalytics:
                        exclude_repos: Optional[List[str]] = None,
                        max_depth: int = 5,
                        use_session_estimation: bool = False,
-                       allowed_users: Optional[Set[str]] = None):
+                       allowed_users: Optional[Set[str]] = None,
+                       include_working_tree_timestamps: bool = False,
+                       working_tree_user: Optional[str] = None,
+                       working_tree_excludes: Optional[List[str]] = None):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -890,7 +977,10 @@ class LocalGitAnalytics:
             exclude_repos,
             max_depth,
             use_session_estimation,
-            allowed_users
+            allowed_users,
+            include_working_tree_timestamps=include_working_tree_timestamps,
+            working_tree_user=working_tree_user,
+            working_tree_excludes=working_tree_excludes,
         )
         
         if df.empty:
@@ -1022,6 +1112,23 @@ def main():
         help='Comma-separated list of repository names to exclude'
     )
     parser.add_argument(
+        '--include-working-tree-timestamps',
+        action='store_true',
+        help='Include filesystem mtime events from non-bare working trees'
+    )
+    parser.add_argument(
+        '--working-tree-user',
+        type=str,
+        default=None,
+        help='User to attribute working tree mtime events to (default: env GITHUB_USERNAME/USER)'
+    )
+    parser.add_argument(
+        '--working-tree-exclude',
+        action='append',
+        default=[],
+        help='Directory name to exclude when scanning working trees (repeatable)'
+    )
+    parser.add_argument(
         '--max-depth',
         type=int,
         default=5,
@@ -1101,14 +1208,17 @@ def main():
     
     # Generate report
     analytics.generate_report(
-        args.output,
-        start_date,
-        end_date,
-        include_repos,
-        exclude_repos,
-        args.max_depth,
-        args.use_sessions,
-        allowed_users
+        output_file=args.output,
+        start_date=start_date,
+        end_date=end_date,
+        include_repos=include_repos,
+        exclude_repos=exclude_repos,
+        max_depth=args.max_depth,
+        use_session_estimation=args.use_sessions,
+        allowed_users=allowed_users,
+        include_working_tree_timestamps=args.include_working_tree_timestamps,
+        working_tree_user=args.working_tree_user,
+        working_tree_excludes=args.working_tree_exclude,
     )
 
 
