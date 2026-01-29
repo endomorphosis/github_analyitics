@@ -25,10 +25,10 @@ fi
 # Run the analytics
 if [ $# -eq 0 ]; then
     echo "Running GitHub analytics for all time..."
-    python github_analytics.py
+    python -m github_analyitics.reporting.github_analytics
 elif [ $# -eq 2 ]; then
     echo "Running GitHub analytics from $1 to $2..."
-    python github_analytics.py --start-date "$1" --end-date "$2"
+    python -m github_analyitics.reporting.github_analytics --start-date "$1" --end-date "$2"
 else
     echo "Usage: $0 [start-date end-date]"
     echo "Example: $0 2024-01-01 2024-12-31"

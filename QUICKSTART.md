@@ -31,20 +31,29 @@ pip install -r requirements.txt
 # Option A: Use the convenience script (easiest)
 ./run_report.sh
 
+# Option A2: Unified timestamp suite (recommended for timestamp analysis)
+./run_timestamp_suite.sh
+
 # Option B: Run Python directly
-python github_analytics.py
+python -m github_analyitics.reporting.github_analytics
+
+# Option B2: Unified timestamp suite
+python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx --sources github,local
 
 # Option C: For a specific date range
 ./run_report.sh 2024-01-01 2024-12-31
 
+# Option C2: Unified timestamp suite for a date range
+./run_timestamp_suite.sh 2024-01-01 2024-12-31
+
 # Option D: Filter repositories
-python github_analytics.py --include-repos repo1,repo2
+python -m github_analyitics.reporting.github_analytics --include-repos repo1,repo2
 
 # Option E: Exclude test repositories
-python github_analytics.py --exclude-repos test-repo,demo-repo
+python -m github_analyitics.reporting.github_analytics --exclude-repos test-repo,demo-repo
 
 # Option F: Only repos where user contributed
-python github_analytics.py --filter-by-user username
+python -m github_analyitics.reporting.github_analytics --filter-by-user username
 ```
 
 ## Advanced Features

@@ -40,6 +40,27 @@ cp .env.example .env
 
 ## Usage
 
+### Unified timestamp suite (recommended)
+
+If you want *all timestamps* in one workbook (GitHub API events + local git commit/file events, with optional working-tree and ZFS snapshot mtimes), run:
+
+```bash
+python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx --sources github,local
+```
+
+With a date range:
+
+```bash
+python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx \
+  --sources github,local --start-date 2024-01-01 --end-date 2024-12-31
+```
+
+Convenience script:
+
+```bash
+./run_timestamp_suite.sh
+```
+
 ### Quick Start Script
 
 For convenience, use the provided script:
@@ -57,7 +78,7 @@ For convenience, use the provided script:
 Run the tool with default settings (analyzes all repositories for the configured user):
 
 ```bash
-python github_analytics.py
+python -m github_analyitics.reporting.github_analytics
 ```
 
 This will generate an Excel file `github_analytics_YYYYMMDD_HHMMSS.xlsx` with comprehensive statistics.
@@ -66,7 +87,7 @@ This will generate an Excel file `github_analytics_YYYYMMDD_HHMMSS.xlsx` with co
 
 **Date Filtering:**
 ```bash
-python github_analytics.py --start-date 2024-01-01 --end-date 2024-12-31
+python -m github_analyitics.reporting.github_analytics --start-date 2024-01-01 --end-date 2024-12-31
 ```
 
 **Repository Filtering:**

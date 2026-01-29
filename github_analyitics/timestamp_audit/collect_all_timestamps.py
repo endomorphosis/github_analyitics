@@ -25,13 +25,113 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from local_git_analytics import LocalGitAnalytics
-from zfs_snapshot_git_timestamps import (
+from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
+from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
     DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
     collect_snapshot_rows,
     find_git_roots,
     list_snapshots,
 )
+
+
+def collect_local_git_and_zfs_sweep(
+    *,
+    repos_path: Path,
+    max_depth: int,
+    start_date: Optional[datetime],
+    end_date: Optional[datetime],
+    default_user: str,
+    include_working_tree_timestamps: bool,
+    working_tree_excludes: List[str],
+    snapshot_roots: List[Path],
+    allow_sudo: bool,
+    zfs_scan_mode: str,
+    zfs_snapshots_limit: int,
+    zfs_granularity: str,
+    zfs_excludes: List[str],
+    zfs_max_seconds_per_root: Optional[float],
+) -> Tuple[pd.DataFrame, List[Dict], List[Dict], List[Dict]]:
+    """Run the local git + working-tree + ZFS snapshot sweep.
+
+    Returns:
+        (summary_df, commit_events, file_events, zfs_rows)
+    """
+
+    if snapshot_roots and os.geteuid() != 0:
+        for root in snapshot_roots:
+            try:
+                probe_snapshot_access(root)
+            except PermissionError:
+                maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=allow_sudo)
+
+    analytics = LocalGitAnalytics(str(repos_path))
+    summary_df = analytics.analyze_all_repositories(
+        start_date=start_date,
+        end_date=end_date,
+        include_repos=None,
+        exclude_repos=None,
+        max_depth=max_depth,
+        use_session_estimation=False,
+        allowed_users=None,
+        include_working_tree_timestamps=include_working_tree_timestamps,
+        working_tree_user=default_user,
+        working_tree_excludes=working_tree_excludes,
+    )
+
+    zfs_rows: List[Dict] = []
+    if snapshot_roots:
+        for snapshot_root in snapshot_roots:
+            try:
+                try:
+                    next(iter(snapshot_root.iterdir()), None)
+                except PermissionError:
+                    maybe_reexec_with_sudo(
+                        f"read ZFS snapshot directory {snapshot_root}",
+                        enabled=allow_sudo,
+                    )
+
+                relative = None
+                if zfs_scan_mode == 'match-repos-path':
+                    mountpoint = snapshot_root_mountpoint(snapshot_root)
+                    if mountpoint is not None:
+                        try:
+                            relative = repos_path.relative_to(mountpoint)
+                        except Exception:
+                            relative = None
+
+                zfs_rows.extend(
+                    collect_zfs_events(
+                        snapshot_root,
+                        default_user,
+                        max_depth,
+                        zfs_excludes,
+                        scan_relative_to_mountpoint=relative,
+                        start_date=start_date,
+                        end_date=end_date,
+                        snapshots_limit=max(int(zfs_snapshots_limit), 0),
+                        granularity=zfs_granularity,
+                        max_seconds=zfs_max_seconds_per_root,
+                    )
+                )
+            except PermissionError:
+                if os.geteuid() == 0:
+                    print(f"Warning: Permission denied while scanning {snapshot_root} even as root; skipping.")
+                    continue
+
+                maybe_reexec_with_sudo(
+                    f"scan ZFS snapshot directory {snapshot_root}",
+                    enabled=allow_sudo,
+                )
+            except Exception as e:
+                print(f"Warning: ZFS snapshot scan failed for {snapshot_root}: {e}")
+
+    file_events = list(analytics.file_events)
+    if zfs_rows:
+        file_events.extend(zfs_rows)
+
+    commit_events = list(analytics.commit_events)
+
+    return summary_df, commit_events, file_events, zfs_rows
 
 
 def parse_date(value: Optional[str]) -> Optional[datetime]:
@@ -554,76 +654,24 @@ def main() -> None:
     else:
         print("Detected ZFS snapshot roots: (none)")
 
-    # If we intend to scan ZFS snapshots, proactively check access and escalate early.
-    if snapshot_roots and os.geteuid() != 0:
-        for root in snapshot_roots:
-            try:
-                probe_snapshot_access(root)
-            except PermissionError:
-                maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=allow_sudo)
+    zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
 
-    analytics = LocalGitAnalytics(str(repos_path))
-    summary_df = analytics.analyze_all_repositories(
+    summary_df, commit_events, file_events, zfs_rows = collect_local_git_and_zfs_sweep(
+        repos_path=repos_path,
+        max_depth=max_depth,
         start_date=start_date,
         end_date=end_date,
-        include_repos=None,
-        exclude_repos=None,
-        max_depth=max_depth,
-        use_session_estimation=False,
-        allowed_users=None,
+        default_user=default_user,
         include_working_tree_timestamps=args.include_working_tree_timestamps,
-        working_tree_user=default_user,
         working_tree_excludes=args.working_tree_exclude,
+        snapshot_roots=snapshot_roots,
+        allow_sudo=allow_sudo,
+        zfs_scan_mode=args.zfs_scan_mode,
+        zfs_snapshots_limit=args.zfs_snapshots_limit,
+        zfs_granularity=args.zfs_granularity,
+        zfs_excludes=zfs_excludes,
+        zfs_max_seconds_per_root=args.zfs_max_seconds_per_root,
     )
-
-    zfs_rows: List[Dict] = []
-    if snapshot_roots:
-        zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
-        for snapshot_root in snapshot_roots:
-            try:
-                # If the snapshot root exists but isn't readable, re-run under sudo.
-                try:
-                    next(iter(snapshot_root.iterdir()), None)
-                except PermissionError:
-                    maybe_reexec_with_sudo(f"read ZFS snapshot directory {snapshot_root}", enabled=allow_sudo)
-
-                relative = None
-                if args.zfs_scan_mode == 'match-repos-path':
-                    mountpoint = snapshot_root_mountpoint(snapshot_root)
-                    if mountpoint is not None:
-                        try:
-                            relative = repos_path.relative_to(mountpoint)
-                        except Exception:
-                            relative = None
-
-                zfs_rows.extend(
-                    collect_zfs_events(
-                        snapshot_root,
-                        default_user,
-                        max_depth,
-                        zfs_excludes,
-                        scan_relative_to_mountpoint=relative,
-                        start_date=start_date,
-                        end_date=end_date,
-                        snapshots_limit=max(int(args.zfs_snapshots_limit), 0),
-                        granularity=args.zfs_granularity,
-                        max_seconds=args.zfs_max_seconds_per_root,
-                    )
-                )
-            except PermissionError:
-                if os.geteuid() == 0:
-                    print(f"Warning: Permission denied while scanning {snapshot_root} even as root; skipping.")
-                    continue
-
-                maybe_reexec_with_sudo(f"scan ZFS snapshot directory {snapshot_root}", enabled=allow_sudo)
-            except Exception as e:
-                print(f"Warning: ZFS snapshot scan failed for {snapshot_root}: {e}")
-
-    file_events = list(analytics.file_events)
-    if zfs_rows:
-        file_events.extend(zfs_rows)
-
-    commit_events = list(analytics.commit_events)
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
         if not summary_df.empty:

@@ -13,6 +13,8 @@ import shutil
 from pathlib import Path
 from datetime import datetime
 
+from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
+
 
 def run_command(cmd, cwd=None, capture=True):
     """Run a command and return output."""
@@ -330,43 +332,34 @@ def main():
             # Generate output filename
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
             output_file = args.output or f'github_analysis_{username}_{timestamp}.xlsx'
-            
-            # Run local_git_analytics.py
-            analytics_script = script_dir / 'local_git_analytics.py'
-            
-            if not analytics_script.exists():
-                print(f"Error: local_git_analytics.py not found at {analytics_script}")
-                return 1
-            
-            # Run with session-based estimation
-            python_exec = sys.executable
-            cmd_parts = [
-                python_exec,
-                str(analytics_script),
-                str(cache_dir),
-                '--use-sessions',
-                '--output', output_file
-            ]
 
-            if args.include_working_tree_timestamps:
-                if args.clone_mode != 'full':
-                    print("Warning: --include-working-tree-timestamps requires --clone-mode full; skipping.")
-                else:
-                    cmd_parts.append('--include-working-tree-timestamps')
-                    if args.working_tree_user:
-                        cmd_parts.extend(['--working-tree-user', args.working_tree_user])
+            def parse_date(value: str | None) -> datetime | None:
+                if not value:
+                    return None
+                return datetime.strptime(value, '%Y-%m-%d')
 
-            if args.start_date:
-                cmd_parts.extend(['--start-date', args.start_date])
-            if args.end_date:
-                cmd_parts.extend(['--end-date', args.end_date])
-            if args.copilot_invokers:
-                cmd_parts.extend(['--copilot-invokers', args.copilot_invokers])
+            start_date = parse_date(args.start_date)
+            end_date = parse_date(args.end_date)
 
-            print(f"Running: {' '.join(cmd_parts)}")
-            print()
+            include_working_tree_timestamps = bool(args.include_working_tree_timestamps)
+            if include_working_tree_timestamps and args.clone_mode != 'full':
+                print("Warning: --include-working-tree-timestamps requires --clone-mode full; skipping.")
+                include_working_tree_timestamps = False
 
-            subprocess.run(cmd_parts, check=True)
+            analytics = LocalGitAnalytics(str(cache_dir), args.copilot_invokers, allowed_users=None)
+            analytics.generate_report(
+                output_file=output_file,
+                start_date=start_date,
+                end_date=end_date,
+                include_repos=None,
+                exclude_repos=None,
+                max_depth=2,
+                use_session_estimation=True,
+                allowed_users=None,
+                include_working_tree_timestamps=include_working_tree_timestamps,
+                working_tree_user=args.working_tree_user,
+                working_tree_excludes=None,
+            )
             
             print()
             print("=" * 70)

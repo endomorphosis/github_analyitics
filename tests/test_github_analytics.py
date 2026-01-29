@@ -8,7 +8,7 @@ Tests basic functionality without requiring GitHub API access.
 import unittest
 from unittest.mock import Mock, MagicMock, patch
 from datetime import datetime, timedelta
-from github_analytics import GitHubAnalytics
+from github_analyitics.reporting.github_analytics import GitHubAnalytics
 import pandas as pd
 
 
@@ -18,7 +18,7 @@ class TestGitHubAnalytics(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures."""
         # Create a mock instance without calling GitHub API
-        with patch('github_analytics.Github'):
+        with patch('github_analyitics.reporting.github_analytics.Github'):
             self.analytics = GitHubAnalytics('fake_token', 'test_user')
     
     def test_estimate_hours_basic(self):

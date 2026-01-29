@@ -285,7 +285,10 @@ class GitHubAnalytics:
         return data
     
     def analyze_pull_requests(self, repo, start_date=None, end_date=None,
-                              allowed_users: Optional[Set[str]] = None) -> Dict:
+                              allowed_users: Optional[Set[str]] = None,
+                              include_comments: bool = False,
+                              include_review_comments: bool = True,
+                              include_review_events: bool = False) -> Dict:
         """
         Analyze pull requests in a repository.
         
@@ -401,6 +404,108 @@ class GitHubAnalytics:
                                     'event_timestamp': merged_date.isoformat(),
                                     'url': pr.html_url
                                 })
+
+                        if include_comments:
+                            # Issue comments on the PR conversation
+                            try:
+                                comments = self.api_call_with_retry(lambda: pr.get_issue_comments())
+                                if comments is not None:
+                                    for comment in comments:
+                                        try:
+                                            comment_date = self.normalize_datetime(comment.created_at)
+                                            if comment_date is None:
+                                                continue
+                                            if start_date and comment_date < start_date:
+                                                continue
+                                            if end_date and comment_date > end_date:
+                                                continue
+
+                                            commenter = comment.user.login if comment.user else "Unknown"
+                                            if allowed_users is not None:
+                                                if not comment.user or comment.user.login not in allowed_users:
+                                                    continue
+
+                                            self.pr_events.append({
+                                                'repository': repo_full_name,
+                                                'number': pr.number,
+                                                'title': pr.title,
+                                                'author': commenter,
+                                                'event_type': 'comment',
+                                                'event_timestamp': comment_date.isoformat(),
+                                                'url': pr.html_url
+                                            })
+                                        except Exception:
+                                            continue
+                            except Exception:
+                                pass
+
+                            # Review comments (inline)
+                            if include_review_comments:
+                                try:
+                                    review_comments = self.api_call_with_retry(lambda: pr.get_review_comments())
+                                    if review_comments is not None:
+                                        for comment in review_comments:
+                                            try:
+                                                comment_date = self.normalize_datetime(comment.created_at)
+                                                if comment_date is None:
+                                                    continue
+                                                if start_date and comment_date < start_date:
+                                                    continue
+                                                if end_date and comment_date > end_date:
+                                                    continue
+
+                                                commenter = comment.user.login if comment.user else "Unknown"
+                                                if allowed_users is not None:
+                                                    if not comment.user or comment.user.login not in allowed_users:
+                                                        continue
+
+                                                self.pr_events.append({
+                                                    'repository': repo_full_name,
+                                                    'number': pr.number,
+                                                    'title': pr.title,
+                                                    'author': commenter,
+                                                    'event_type': 'review_comment',
+                                                    'event_timestamp': comment_date.isoformat(),
+                                                    'url': pr.html_url
+                                                })
+                                            except Exception:
+                                                continue
+                                except Exception:
+                                    pass
+
+                            if include_review_events:
+                                # Review submit timestamps (APPROVED/CHANGES_REQUESTED/etc)
+                                try:
+                                    reviews = self.api_call_with_retry(lambda: pr.get_reviews())
+                                    if reviews is not None:
+                                        for review in reviews:
+                                            try:
+                                                submitted = self.normalize_datetime(getattr(review, 'submitted_at', None))
+                                                if submitted is None:
+                                                    continue
+                                                if start_date and submitted < start_date:
+                                                    continue
+                                                if end_date and submitted > end_date:
+                                                    continue
+
+                                                reviewer = review.user.login if review.user else "Unknown"
+                                                if allowed_users is not None:
+                                                    if not review.user or review.user.login not in allowed_users:
+                                                        continue
+
+                                                self.pr_events.append({
+                                                    'repository': repo_full_name,
+                                                    'number': pr.number,
+                                                    'title': pr.title,
+                                                    'author': reviewer,
+                                                    'event_type': f"review_{(getattr(review, 'state', '') or '').lower()}",
+                                                    'event_timestamp': submitted.isoformat(),
+                                                    'url': pr.html_url
+                                                })
+                                            except Exception:
+                                                continue
+                                except Exception:
+                                    pass
                             
                 except Exception as e:
                     print(f"Warning: Error processing PR in {repo.name}: {e}")
@@ -412,7 +517,9 @@ class GitHubAnalytics:
         return data
     
     def analyze_issues(self, repo, start_date=None, end_date=None,
-                       allowed_users: Optional[Set[str]] = None) -> Dict:
+                       allowed_users: Optional[Set[str]] = None,
+                       include_pull_requests: bool = False,
+                       include_pull_request_comments_only: bool = True) -> Dict:
         """
         Analyze issues in a repository.
         
@@ -442,8 +549,10 @@ class GitHubAnalytics:
                 if issue_index % 10 == 0:
                     self.check_rate_limit()  # Check periodically
                 try:
-                    # Skip pull requests (they show up in issues too)
-                    if issue.pull_request:
+                    # Pull requests show up in issues too.
+                    # By default we skip them, but we can optionally capture PR comments via the issue API.
+                    is_pr = bool(getattr(issue, 'pull_request', None))
+                    if is_pr and not include_pull_requests:
                         continue
                     
                     # Created date
@@ -460,24 +569,26 @@ class GitHubAnalytics:
                             continue
                     date_key = created_date.strftime('%Y-%m-%d')
                     
-                    if created_in_range:
-                        data[author][date_key]['issues_created'] += 1
+                    repo_full_name = getattr(repo, 'full_name', repo.name)
 
-                    if self.issue_events is not None:
-                        repo_full_name = getattr(repo, 'full_name', repo.name)
+                    if not (is_pr and include_pull_request_comments_only):
                         if created_in_range:
-                            self.issue_events.append({
-                                'repository': repo_full_name,
-                                'number': issue.number,
-                                'title': issue.title,
-                                'author': author,
-                                'event_type': 'created',
-                                'event_timestamp': created_date.isoformat(),
-                                'url': issue.html_url
-                            })
+                            data[author][date_key]['issues_created'] += 1
+
+                        if self.issue_events is not None:
+                            if created_in_range:
+                                self.issue_events.append({
+                                    'repository': repo_full_name,
+                                    'number': issue.number,
+                                    'title': issue.title,
+                                    'author': author,
+                                    'event_type': 'created' if not is_pr else 'pr_created',
+                                    'event_timestamp': created_date.isoformat(),
+                                    'url': issue.html_url
+                                })
                     
                     # Check if closed
-                    if issue.closed_at:
+                    if issue.closed_at and not (is_pr and include_pull_request_comments_only):
                         closed_date = self.normalize_datetime(issue.closed_at)
                         closed_in_range = True
                         if start_date and closed_date < start_date:
@@ -494,7 +605,7 @@ class GitHubAnalytics:
                                 'number': issue.number,
                                 'title': issue.title,
                                 'author': author,
-                                'event_type': 'closed',
+                                'event_type': 'closed' if not is_pr else 'pr_closed',
                                 'event_timestamp': closed_date.isoformat(),
                                 'url': issue.html_url
                             })
@@ -522,7 +633,7 @@ class GitHubAnalytics:
                                     'number': issue.number,
                                     'title': issue.title,
                                     'author': commenter,
-                                    'event_type': 'comment',
+                                    'event_type': 'comment' if not is_pr else 'pr_comment',
                                     'event_timestamp': comment_date.isoformat(),
                                     'url': issue.html_url
                                 })
@@ -688,7 +799,11 @@ class GitHubAnalytics:
                                  skip_commit_stats: bool = False,
                                  restrict_to_collaborators: bool = True,
                                  restrict_to_owner_namespace: bool = True,
-                                 fast_mode: bool = False) -> pd.DataFrame:
+                                 fast_mode: bool = False,
+                                 include_pr_comments: bool = False,
+                                 include_pr_review_comments: bool = True,
+                                 include_pr_review_events: bool = False,
+                                 include_issue_pr_comments: bool = False) -> pd.DataFrame:
         """
         Analyze all repositories for the user with filtering options.
         
@@ -775,11 +890,26 @@ class GitHubAnalytics:
             else:
                 # Analyze pull requests
                 print(f"  - Analyzing pull requests...")
-                pr_data = self.analyze_pull_requests(repo, start_date, end_date, allowed_users=allowed_users)
+                pr_data = self.analyze_pull_requests(
+                    repo,
+                    start_date,
+                    end_date,
+                    allowed_users=allowed_users,
+                    include_comments=include_pr_comments,
+                    include_review_comments=include_pr_review_comments,
+                    include_review_events=include_pr_review_events,
+                )
                 
                 # Analyze issues
                 print(f"  - Analyzing issues...")
-                issue_data = self.analyze_issues(repo, start_date, end_date, allowed_users=allowed_users)
+                issue_data = self.analyze_issues(
+                    repo,
+                    start_date,
+                    end_date,
+                    allowed_users=allowed_users,
+                    include_pull_requests=include_issue_pr_comments,
+                    include_pull_request_comments_only=True,
+                )
                 
                 # Analyze file modifications
                 if skip_file_modifications:
@@ -852,7 +982,11 @@ class GitHubAnalytics:
                        skip_commit_stats: bool = False,
                        restrict_to_collaborators: bool = True,
                        restrict_to_owner_namespace: bool = True,
-                       fast_mode: bool = False):
+                       fast_mode: bool = False,
+                       include_pr_comments: bool = False,
+                       include_pr_review_comments: bool = True,
+                       include_pr_review_events: bool = False,
+                       include_issue_pr_comments: bool = False):
         """
         Generate a comprehensive report and save to Excel.
         
@@ -877,7 +1011,11 @@ class GitHubAnalytics:
             skip_commit_stats,
             restrict_to_collaborators,
             restrict_to_owner_namespace,
-            fast_mode
+            fast_mode,
+            include_pr_comments,
+            include_pr_review_comments,
+            include_pr_review_events,
+            include_issue_pr_comments,
         )
         
         if df.empty:
@@ -1005,6 +1143,10 @@ def main():
     include_non_owned = False
     disable_rate_limiting = False
     fast_mode = False
+    include_pr_comments = False
+    include_pr_review_comments = True
+    include_pr_review_events = False
+    include_issue_pr_comments = False
     
     if len(sys.argv) > 1:
         # Simple command line parsing
@@ -1046,6 +1188,19 @@ def main():
             elif sys.argv[i] == '--fast':
                 fast_mode = True
                 i += 1
+            elif sys.argv[i] == '--include-pr-comments':
+                include_pr_comments = True
+                i += 1
+            elif sys.argv[i] == '--skip-pr-review-comments':
+                include_pr_review_comments = False
+                i += 1
+            elif sys.argv[i] == '--include-pr-review-events':
+                include_pr_review_events = True
+                i += 1
+            elif sys.argv[i] == '--include-pr-issue-comments':
+                # Capture PR comments via the Issues API as well (PRs show up in Issues list).
+                include_issue_pr_comments = True
+                i += 1
             elif sys.argv[i] in ['--help', '-h']:
                 print("Usage: python github_analytics.py [OPTIONS]")
                 print("\nOptions:")
@@ -1061,6 +1216,10 @@ def main():
                 print("  --include-all-authors          Include all authors (disable collaborator-only filter)")
                 print("  --include-non-owned            Include repositories not owned by this user")
                 print("  --fast                         Skip PRs/issues/file mods and commit stats (fastest)")
+                print("  --include-pr-comments          Include PR issue comments and review comments")
+                print("  --skip-pr-review-comments      Do not include inline PR review comments")
+                print("  --include-pr-review-events     Include PR review submission events")
+                print("  --include-pr-issue-comments    Include PR conversation comments via Issues API")
                 print("  --help, -h                     Show this help message")
                 sys.exit(0)
             else:
@@ -1099,7 +1258,11 @@ def main():
         skip_commit_stats,
         not include_all_authors,
         not include_non_owned,
-        fast_mode
+        fast_mode,
+        include_pr_comments,
+        include_pr_review_comments,
+        include_pr_review_events,
+        include_issue_pr_comments,
     )
 
 

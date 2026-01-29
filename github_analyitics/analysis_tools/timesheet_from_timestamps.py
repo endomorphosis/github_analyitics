@@ -15,6 +15,7 @@ import pandas as pd
 
 
 SHEET_PREFERENCE = [
+    "All Events",
     "File Timestamp List",
     "User Timeline",
     "Commit Events",

@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "github-analyitics"
+version = "0.1.0"
+description = "GitHub analytics + unified timestamp collection suite"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "endomorphosis"}]
+dependencies = [
+  "PyGithub>=2.1.1",
+  "pandas>=2.0.0",
+  "openpyxl>=3.1.0",
+  "python-dotenv>=1.0.0",
+  "requests>=2.31.0",
+]
+
+[project.scripts]
+github-analyitics-report = "github_analyitics.reporting.github_analytics:main"
+github-analyitics-timestamps = "github_analyitics.timestamp_audit.timestamp_suite:main"
+github-analyitics-local = "github_analyitics.timestamp_audit.local_git_analytics:main"
+
+github-analyitics-clone = "github_analyitics.reporting.clone_and_analyze:main"
+
+[tool.setuptools.packages.find]
+include = ["github_analyitics*"]

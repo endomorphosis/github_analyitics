@@ -1196,8 +1196,10 @@ def main():
     # Resolve allowed users
     allowed_users = None
     if not args.include_all_authors:
-        script_dir = Path(__file__).parent
-        default_allowed_file = script_dir / '_allowed_users.txt'
+        cwd_allowed_file = Path.cwd() / '_allowed_users.txt'
+        module_allowed_file = Path(__file__).resolve().parent / '_allowed_users.txt'
+        default_allowed_file = cwd_allowed_file if cwd_allowed_file.exists() else module_allowed_file
+
         allowed_file = args.allowed_users_file or (str(default_allowed_file) if default_allowed_file.exists() else None)
         allowed_users = LocalGitAnalytics.load_allowed_users(allowed_file)
         if allowed_users:

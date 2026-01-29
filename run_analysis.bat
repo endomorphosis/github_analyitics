@@ -25,9 +25,9 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
-echo Running clone_and_analyze.py...
+echo Running clone_and_analyze (package module)...
 echo.
 
-python clone_and_analyze.py
+python -m github_analyitics.reporting.clone_and_analyze
 
 pause

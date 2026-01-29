@@ -6,25 +6,25 @@
 
 1. Install Python 3.7 or higher
 2. Clone this repository
-3. Install dependencies:
+python -m github_analyitics.reporting.github_analytics
    ```bash
    pip install -r requirements.txt
    ```
 
 ### Step 2: Configure GitHub Access
-
+python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx --sources github,local
 1. Create a GitHub Personal Access Token at https://github.com/settings/tokens
 2. Required scopes: `repo` and `read:user`
 3. Copy `.env.example` to `.env`:
    ```bash
    cp .env.example .env
-   ```
+python -m github_analyitics.reporting.github_analytics --start-date 2024-01-01 --end-date 2024-12-31
 4. Edit `.env` and add your credentials:
    ```
    GITHUB_TOKEN=your_actual_token_here
    GITHUB_USERNAME=your_github_username
    ```
-
+python -m github_analyitics.reporting.github_analytics --output my_report.xlsx
 ### Step 3: Run Analytics
 
 Basic usage (analyze all repositories):
@@ -32,7 +32,13 @@ Basic usage (analyze all repositories):
 python github_analytics.py
 ```
 
-This will generate a timestamped Excel file with comprehensive statistics.
+python -m github_analyitics.reporting.github_analytics --include-pr-comments
+
+```bash
+python timestamp_suite.py --output github_analytics_timestamps_suite.xlsx --sources github,local
+```
+
+python -m github_analyitics.reporting.github_analytics \
 
 ## Advanced Usage
 
@@ -46,6 +52,14 @@ python github_analytics.py --start-date 2024-01-01 --end-date 2024-12-31
 
 ```bash
 python github_analytics.py --output my_report.xlsx
+```
+
+### PR comment timestamps
+
+To include PR conversation comments and inline review comments (more API calls):
+
+```bash
+python github_analytics.py --include-pr-comments
 ```
 
 ### Combine Options
