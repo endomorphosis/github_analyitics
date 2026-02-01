@@ -4,27 +4,30 @@
 
 ### Step 1: Setup
 
-1. Install Python 3.7 or higher
+1. Install Python 3.10+
 2. Clone this repository
-python -m github_analyitics.reporting.github_analytics
-   ```bash
-   pip install -r requirements.txt
-   ```
+3. Install dependencies:
 
-### Step 2: Configure GitHub Access
-python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx --sources github,local
-1. Create a GitHub Personal Access Token at https://github.com/settings/tokens
-2. Required scopes: `repo` and `read:user`
-3. Copy `.env.example` to `.env`:
-   ```bash
-   cp .env.example .env
-python -m github_analyitics.reporting.github_analytics --start-date 2024-01-01 --end-date 2024-12-31
-4. Edit `.env` and add your credentials:
-   ```
-   GITHUB_TOKEN=your_actual_token_here
-   GITHUB_USERNAME=your_github_username
-   ```
-python -m github_analyitics.reporting.github_analytics --output my_report.xlsx
+```bash
+pip install -r requirements.txt
+```
+
+### Step 2: Authenticate GitHub CLI
+
+This project uses the GitHub CLI (`gh`) for authentication and API access.
+
+```bash
+gh --version
+gh auth login
+```
+
+Optionally set `GITHUB_USERNAME` (otherwise it defaults to the authenticated `gh` user):
+
+```bash
+cp .env.example .env
+# edit .env if you want to override GITHUB_USERNAME
+```
+
 ### Step 3: Run Analytics
 
 Basic usage (analyze all repositories):
@@ -162,23 +165,22 @@ The tool analyzes:
 
 ## Privacy & Security
 
-- Your GitHub token is stored only in `.env` (not committed)
+- Authentication is handled by the GitHub CLI (`gh`) via `gh auth login`
 - The tool only reads data (no modifications)
 - All data processing happens locally
 - Generated reports are saved locally
 
 ## Troubleshooting
 
-### "GITHUB_TOKEN not found"
-Create a `.env` file with your token. See `.env.example` for format.
+### "gh is not authenticated"
+Run: `gh auth login`
 
 ### "GITHUB_USERNAME not found"
 Add your GitHub username to the `.env` file.
 
 ### "403 Forbidden" Errors
-- Check that your token has correct scopes (`repo`, `read:user`)
-- Ensure the token hasn't expired
 - Verify you have access to the repositories
+- Re-run `gh auth login` if your auth is stale
 
 ### Rate Limiting
 GitHub API has rate limits:
@@ -221,8 +223,7 @@ For issues or questions:
 
 ## Version Information
 
-- Python: 3.7+
-- PyGithub: 2.1.1+
+- Python: 3.10+
 - pandas: 2.0.0+
 - openpyxl: 3.1.0+
 

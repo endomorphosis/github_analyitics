@@ -26,17 +26,21 @@ cd github_analyitics
 pip install -r requirements.txt
 ```
 
-3. Create a GitHub Personal Access Token:
-   - Go to https://github.com/settings/tokens
-   - Click "Generate new token" (classic)
-   - Select scopes: `repo` and `read:user`
-   - Copy the generated token
+Alternatively, use the bootstrap installer (best-effort installs required CLI tools like `gh` and `git`, and Python deps into `.venv`):
 
-4. Configure environment variables:
 ```bash
-cp .env.example .env
-# Edit .env and add your token and username
+./install.sh
 ```
+
+3. Install and authenticate GitHub CLI (`gh`):
+```bash
+gh --version
+gh auth login
+```
+On Linux, you can optionally run the CLI-only installer: `./scripts/install_cli_tools.sh`
+
+4. (Optional) Configure environment variables:
+- `GITHUB_USERNAME` (defaults to the authenticated `gh` user)
 
 ## Usage
 

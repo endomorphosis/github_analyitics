@@ -25,8 +25,8 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import pandas as pd
 
-from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
-from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
+from local_git_analytics import LocalGitAnalytics
+from zfs_snapshot_git_timestamps import (
     DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
     collect_snapshot_rows,
     find_git_roots,

@@ -1,54 +1,20 @@
 #!/usr/bin/env python3
+"""Legacy shim.
+
+The maintained implementation lives in the package module:
+`python -m github_analyitics.reporting.github_analytics`
+
+This wrapper exists so older scripts/tasks that call `github_analytics.py`
+continue to work, while using the gh-backed implementation.
 """
-GitHub Analytics Tool
 
-Analyzes commit history, pull requests, issues, and file modifications
-to calculate per-user statistics including commits, lines of code, and
-estimated work hours. Generates daily breakdown spreadsheets.
-"""
-
-import os
-import sys
-import time
-from datetime import datetime, timedelta, timezone
-from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Set
-import pandas as pd
-try:
-    # Legacy dependency (no longer required). Kept optional so the module can load
-    # even when PyGithub is not installed.
-    from github import Github, GithubException, RateLimitExceededException  # type: ignore
-except Exception:  # pragma: no cover
-    Github = None  # type: ignore
-    GithubException = Exception  # type: ignore
-
-    class RateLimitExceededException(Exception):
-        pass
-from dotenv import load_dotenv
+from __future__ import annotations
 
 
-class GitHubAnalytics:
-    """Analyzes GitHub repository activity and generates reports."""
-    
-    def __init__(self, token: str, username: str, enable_rate_limiting: bool = True):
-        """
-        Initialize GitHub Analytics.
-        
-        Args:
-            token: GitHub Personal Access Token
-            username: GitHub username whose repositories to analyze
-            enable_rate_limiting: Enable automatic rate limit handling (default: True)
-        """
-        self.github = Github(token)
-        self.username = username
-        self.user = self.github.get_user(username)
-        self.enable_rate_limiting = enable_rate_limiting
-        self.api_calls_made = 0
-        self.backoff_time = 1  # Initial backoff time in seconds
-        self.last_rate_limit_check = 0.0
-        self.commit_events: List[Dict] = []
-        self.pr_events: List[Dict] = []
-        self.issue_events: List[Dict] = []
+def main() -> None:
+    from github_analyitics.reporting.github_analytics import main as _main
+
+    _main()
 
     @staticmethod
     def normalize_datetime(dt: Optional[datetime]) -> Optional[datetime]:
@@ -1273,14 +1239,6 @@ def main():
         include_pr_review_events,
         include_issue_pr_comments,
     )
-
-
-from .github_analytics_gh import GitHubAnalytics as _GhGitHubAnalytics
-from .github_analytics_gh import main as _gh_main
-
-# Redirect public API to gh-backed implementation.
-GitHubAnalytics = _GhGitHubAnalytics
-main = _gh_main
 
 
 if __name__ == '__main__':

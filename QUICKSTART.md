@@ -2,28 +2,29 @@
 
 ## Generate Your First Report in 3 Steps
 
-### Step 1: Set Up Credentials
+### Step 1: Authenticate GitHub CLI
+
+This project uses the GitHub CLI (`gh`) for authentication and API access.
 
 ```bash
-# Copy the example configuration file
-cp .env.example .env
-
-# Edit .env with your information
-# Replace 'your_github_token_here' with your actual token
-# Replace 'your_username_here' with your GitHub username
+gh --version
+gh auth login
 ```
 
-To create a GitHub token:
-1. Go to https://github.com/settings/tokens
-2. Click "Generate new token (classic)"
-3. Select scopes: `repo` and `read:user`
-4. Copy the generated token
+Optionally set `GITHUB_USERNAME` (otherwise it defaults to the authenticated `gh` user):
+
+```bash
+cp .env.example .env
+# (optional) edit .env and set GITHUB_USERNAME
+```
 
 ### Step 2: Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+./install.sh
 ```
+
+This will (best-effort) install required CLI tools (like `gh` and `git`) and install Python dependencies into `.venv`.
 
 ### Step 3: Run the Report
 
@@ -90,9 +91,8 @@ The report includes:
 
 ## Troubleshooting
 
-**"GITHUB_TOKEN not found"**
-- Make sure you created `.env` from `.env.example`
-- Add your GitHub token to the `.env` file
+**"gh is not authenticated"**
+- Run: `gh auth login`
 
 **"Module not found"**
 - Run: `pip install -r requirements.txt`

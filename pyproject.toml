@@ -11,7 +11,6 @@ requires-python = ">=3.10"
 license = {file = "LICENSE"}
 authors = [{name = "endomorphosis"}]
 dependencies = [
-  "PyGithub>=2.1.1",
   "pandas>=2.0.0",
   "openpyxl>=3.1.0",
   "python-dotenv>=1.0.0",

@@ -30,7 +30,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import pandas as pd
 from dotenv import load_dotenv
 
-from github_analyitics.timestamp_audit.collect_all_timestamps import (
+from collect_all_timestamps import (
     collect_local_git_and_zfs_sweep,
     detect_github_username,
     detect_max_depth,
@@ -38,10 +38,8 @@ from github_analyitics.timestamp_audit.collect_all_timestamps import (
     guess_repos_base_path,
     rank_snapshot_roots,
 )
-from github_analyitics.reporting.github_analytics import GitHubAnalytics
-from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
-    DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
-)
+from github_analytics import GitHubAnalytics
+from zfs_snapshot_git_timestamps import DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES
 
 
 def parse_date(value: Optional[str]) -> Optional[datetime]:
@@ -180,7 +178,7 @@ def main() -> None:
     )
 
     # GitHub options
-    parser.add_argument('--github-token', default=None, help='(Deprecated) GitHub token (not required when using gh auth)')
+    parser.add_argument('--github-token', default=None, help='GitHub token (default: env GITHUB_TOKEN)')
     parser.add_argument('--github-username', default=None, help='GitHub username (default: env GITHUB_USERNAME)')
     parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications')
     parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup')
@@ -465,10 +463,7 @@ def main() -> None:
         write_sheet(writer, 'PR Events', dataframe_or_empty(gh_pr_events))
         write_sheet(writer, 'Issue Events', dataframe_or_empty(gh_issue_events))
 
-    if verbose:
-        print(f"Wrote unified timestamp suite workbook: {output_path}")
-    else:
-        print(f"Wrote unified timestamp suite workbook: {output_path}")
+    print(f"Wrote unified timestamp suite workbook: {output_path}")
 
 
 if __name__ == '__main__':

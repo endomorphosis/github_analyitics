@@ -332,8 +332,7 @@ class TestTimestampSpreadsheets(unittest.TestCase):
                 ]
             )
 
-            with unittest.mock.patch("github_analyitics.reporting.github_analytics.Github"):
-                analytics = GitHubAnalytics("fake", "test_user")
+            analytics = GitHubAnalytics("fake", "test_user")
 
             def fake_analyze_all_repositories(*args, **kwargs):
                 # Populate some event lists so the event sheets have data

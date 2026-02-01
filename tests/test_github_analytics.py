@@ -17,9 +17,8 @@ class TestGitHubAnalytics(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        # Create a mock instance without calling GitHub API
-        with patch('github_analyitics.reporting.github_analytics.Github'):
-            self.analytics = GitHubAnalytics('fake_token', 'test_user')
+        # Create an instance without requiring network/gh.
+        self.analytics = GitHubAnalytics('fake_token', 'test_user')
     
     def test_estimate_hours_basic(self):
         """Test work hour estimation with basic inputs."""
