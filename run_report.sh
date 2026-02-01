@@ -52,4 +52,4 @@ fi
 
 echo ""
 echo "Report generation complete!"
-echo "Check the current directory for the generated .xlsx file"
+echo "Check the data_reports/<timestamp>/ folder for the generated .xlsx file"

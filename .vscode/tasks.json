@@ -46,14 +46,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats --output '${workspaceFolder}/github_analytics_timestamps.xlsx'"
+				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats --output '${env:WORKSPACEFOLDER}\\github_analytics_timestamps.xlsx'"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats"
 				]
 			},
 			"isBackground": false
@@ -65,14 +65,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --output '${workspaceFolder}/github_analytics_timestamps_full.xlsx'"
+				"./.venv/bin/python -m github_analyitics.reporting.github_analytics"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --output '${env:WORKSPACEFOLDER}\\github_analytics_timestamps_full.xlsx'"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics"
 				]
 			},
 			"isBackground": false
@@ -84,14 +84,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats --output '${workspaceFolder}/github_analytics_timestamps_owned.xlsx'"
+				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats --output '${env:WORKSPACEFOLDER}\\github_analytics_timestamps_owned.xlsx'"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats"
 				]
 			},
 			"isBackground": false
@@ -103,14 +103,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats --output '${workspaceFolder}/github_analytics_timestamps_filtered.xlsx'"
+				"./.venv/bin/python -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats --output '${env:WORKSPACEFOLDER}\\github_analytics_timestamps_filtered.xlsx'"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.github_analytics --skip-file-modifications --skip-commit-stats"
 				]
 			},
 			"isBackground": false
@@ -122,14 +122,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx' --cleanup"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --cleanup"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx' --cleanup"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --cleanup"
 				]
 			},
 			"isBackground": false
@@ -141,14 +141,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx' --cleanup"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --cleanup"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx' --cleanup"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --cleanup"
 				]
 			},
 			"isBackground": false
@@ -159,14 +159,14 @@
 			"command": "bash",
 			"args": [
 				"-lc",
-				"./.venv/bin/python -c \"import pandas as pd; xls=pd.ExcelFile(r'${workspaceFolder}/github_analytics_timestamps.xlsx'); print(xls.sheet_names)\""
+				"./.venv/bin/python -c \"import pathlib, pandas as pd; base=pathlib.Path(r'${workspaceFolder}')/'data_reports'; files=sorted(base.glob('**/*.xlsx'), key=lambda p: p.stat().st_mtime, reverse=True); p=files[0]; print('Latest:', p); xls=pd.ExcelFile(p); print(xls.sheet_names)\""
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -c \"import pandas as pd; xls=pd.ExcelFile(r'${env:WORKSPACEFOLDER}\\github_analytics_timestamps.xlsx'); print(xls.sheet_names)\""
+					".\\.venv\\Scripts\\python.exe -c \"import pathlib, pandas as pd; base=pathlib.Path(r'${env:WORKSPACEFOLDER}')/'data_reports'; files=sorted(base.glob('**/*.xlsx'), key=lambda p: p.stat().st_mtime, reverse=True); p=files[0]; print('Latest:', p); xls=pd.ExcelFile(p); print(xls.sheet_names)\""
 				]
 			},
 			"isBackground": false
@@ -177,14 +177,14 @@
 			"command": "bash",
 			"args": [
 				"-lc",
-				"./.venv/bin/python -c \"import pandas as pd, pathlib; xls=pd.ExcelFile(r'${workspaceFolder}/github_analytics_timestamps.xlsx'); pathlib.Path(r'${workspaceFolder}/_sheet_names.txt').write_text('\\n'.join(xls.sheet_names), encoding='utf-8')\""
+				"./.venv/bin/python -c \"import pathlib, pandas as pd; base=pathlib.Path(r'${workspaceFolder}')/'data_reports'; files=sorted(base.glob('**/*.xlsx'), key=lambda p: p.stat().st_mtime, reverse=True); p=files[0]; xls=pd.ExcelFile(p); out=p.parent/'sheet_names.txt'; out.write_text('\\n'.join(xls.sheet_names), encoding='utf-8'); print('Wrote:', out)\""
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -c \"import pandas as pd, pathlib; xls=pd.ExcelFile(r'${env:WORKSPACEFOLDER}\\github_analytics_timestamps.xlsx'); pathlib.Path(r'${env:WORKSPACEFOLDER}\\_sheet_names.txt').write_text('`n'.join(xls.sheet_names), encoding='utf-8')\""
+					".\\.venv\\Scripts\\python.exe -c \"import pathlib, pandas as pd; base=pathlib.Path(r'${env:WORKSPACEFOLDER}')/'data_reports'; files=sorted(base.glob('**/*.xlsx'), key=lambda p: p.stat().st_mtime, reverse=True); p=files[0]; xls=pd.ExcelFile(p); out=p.parent/'sheet_names.txt'; out.write_text('\\n'.join(xls.sheet_names), encoding='utf-8'); print('Wrote:', out)\""
 				]
 			},
 			"isBackground": false
@@ -196,14 +196,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx' --cleanup"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --cleanup"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx' --cleanup"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --cleanup"
 				]
 			},
 			"isBackground": false
@@ -215,14 +215,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx' --cleanup"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --cleanup"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx' --cleanup"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --cleanup"
 				]
 			},
 			"isBackground": false
@@ -234,14 +234,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx' --cleanup"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --cleanup"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx' --cleanup"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --cleanup"
 				]
 			},
 			"isBackground": false
@@ -253,14 +253,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx' --cleanup"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --cleanup"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx' --cleanup"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --cleanup"
 				]
 			},
 			"isBackground": false
@@ -272,14 +272,14 @@
 			"dependsOn": ["Check GitHub CLI auth"],
 			"args": [
 				"-lc",
-				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze --output '${workspaceFolder}/github_analysis_with_file_timestamps.xlsx'"
+				"./.venv/bin/python -m github_analyitics.reporting.clone_and_analyze"
 			],
 			"windows": {
 				"command": "pwsh",
 				"args": [
 					"-NoProfile",
 					"-Command",
-					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze --output '${env:WORKSPACEFOLDER}\\github_analysis_with_file_timestamps.xlsx'"
+					".\\.venv\\Scripts\\python.exe -m github_analyitics.reporting.clone_and_analyze"
 				]
 			},
 			"isBackground": true,

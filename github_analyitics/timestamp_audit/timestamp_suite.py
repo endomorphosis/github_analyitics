@@ -161,7 +161,12 @@ def main() -> None:
     load_dotenv()
 
     parser = argparse.ArgumentParser(description="Collect all timestamps (GitHub + local + ZFS) into one workbook.")
-    parser.add_argument('--output', required=True, help='Output Excel file')
+    parser.add_argument('--output', default=None, help='Output Excel file (default: data_reports/<timestamp>/github_analytics_timestamps_suite.xlsx)')
+    parser.add_argument(
+        '--output-dir',
+        default='data_reports',
+        help='Base directory for timestamped outputs when --output is not provided (default: data_reports)',
+    )
     parser.add_argument('--start-date', default=None, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', default=None, help='End date (YYYY-MM-DD)')
 
@@ -175,8 +180,8 @@ def main() -> None:
 
     parser.add_argument(
         '--sources',
-        default='github,local',
-        help='Comma-separated sources: github,local,zfs (default: github,local)',
+        default='github,local,zfs',
+        help='Comma-separated sources: github,local,zfs (default: github,local,zfs)',
     )
 
     # GitHub options
@@ -233,7 +238,15 @@ def main() -> None:
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
 
-    output_path = Path(args.output).expanduser().resolve()
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        from github_analyitics.reporting.report_paths import default_xlsx_path
+
+        output_path = default_xlsx_path(
+            'github_analytics_timestamps_suite.xlsx',
+            base_dir=args.output_dir,
+        )
 
     if verbose:
         print(f"Output: {output_path}")

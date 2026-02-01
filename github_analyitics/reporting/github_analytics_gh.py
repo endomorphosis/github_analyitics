@@ -565,8 +565,9 @@ class GitHubAnalytics:
         include_issue_pr_comments: bool,
     ) -> None:
         if not output_file:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"github_analytics_{timestamp}.xlsx"
+            from github_analyitics.reporting.report_paths import default_xlsx_path
+
+            output_file = str(default_xlsx_path("github_analytics.xlsx"))
 
         df = self.analyze_all_repositories(
             start_date=start_date,
@@ -690,6 +691,7 @@ def main() -> None:
     start_date = None
     end_date = None
     output_file = None
+    output_dir = None
     include_repos = None
     exclude_repos = None
     filter_by_user = None
@@ -715,6 +717,9 @@ def main() -> None:
                 i += 2
             elif sys.argv[i] == "--output" and i + 1 < len(sys.argv):
                 output_file = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--output-dir" and i + 1 < len(sys.argv):
+                output_dir = sys.argv[i + 1]
                 i += 2
             elif sys.argv[i] == "--include-repos" and i + 1 < len(sys.argv):
                 include_repos = sys.argv[i + 1].split(",")
@@ -761,6 +766,7 @@ def main() -> None:
                 print("  --start-date YYYY-MM-DD        Start date for analysis")
                 print("  --end-date YYYY-MM-DD          End date for analysis")
                 print("  --output FILE                  Output file path")
+                print("  --output-dir DIR               Base directory for timestamped outputs (when --output not set)")
                 print("  --include-repos REPO1,REPO2    Only analyze these repositories")
                 print("  --exclude-repos REPO1,REPO2    Exclude these repositories")
                 print("  --filter-by-user USERNAME      (Not enforced in gh backend)")
@@ -785,6 +791,12 @@ def main() -> None:
         raise SystemExit(1)
 
     analytics = GitHubAnalytics(token="", username=username, enable_rate_limiting=not disable_rate_limiting)
+
+    if not output_file and output_dir:
+        from github_analyitics.reporting.report_paths import default_xlsx_path
+
+        output_file = str(default_xlsx_path("github_analytics.xlsx", base_dir=output_dir))
+
     analytics.generate_report(
         output_file,
         start_date,

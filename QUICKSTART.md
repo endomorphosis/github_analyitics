@@ -39,7 +39,9 @@ This will (best-effort) install required CLI tools (like `gh` and `git`) and ins
 python -m github_analyitics.reporting.github_analytics
 
 # Option B2: Unified timestamp suite
-python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx --sources github,local
+python -m github_analyitics.timestamp_audit.timestamp_suite
+
+Outputs are written to `data_reports/<timestamp>/` by default.
 
 # Option C: For a specific date range
 ./run_report.sh 2024-01-01 2024-12-31

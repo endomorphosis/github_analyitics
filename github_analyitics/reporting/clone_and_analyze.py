@@ -158,7 +158,13 @@ def main():
     parser.add_argument(
         '--output',
         type=str,
-        help='Output file path (default: github_analysis_{username}_{timestamp}.xlsx)'
+        help='Output file path (default: data_reports/<timestamp>/github_analysis_with_file_timestamps.xlsx)'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default='data_reports',
+        help='Base directory for timestamped outputs when --output is not provided (default: data_reports)'
     )
     parser.add_argument(
         '--cache-dir',
@@ -237,7 +243,18 @@ def main():
     if not username:
         print("Error: Could not determine GitHub username")
         return 1
-    
+
+    # Determine output path
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        from github_analyitics.reporting.report_paths import default_xlsx_path
+
+        output_path = default_xlsx_path(
+            'github_analysis_with_file_timestamps.xlsx',
+            base_dir=args.output_dir,
+        )
+
     # List repositories
     owners = [username]
     if args.owners:
@@ -329,9 +346,7 @@ def main():
             print("=" * 70)
             print()
             
-            # Generate output filename
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_file = args.output or f'github_analysis_{username}_{timestamp}.xlsx'
+            output_file = str(output_path)
 
             def parse_date(value: str | None) -> datetime | None:
                 if not value:

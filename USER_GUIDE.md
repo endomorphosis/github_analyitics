@@ -38,7 +38,7 @@ python github_analytics.py
 python -m github_analyitics.reporting.github_analytics --include-pr-comments
 
 ```bash
-python timestamp_suite.py --output github_analytics_timestamps_suite.xlsx --sources github,local
+python timestamp_suite.py
 ```
 
 python -m github_analyitics.reporting.github_analytics \

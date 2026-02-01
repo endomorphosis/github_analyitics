@@ -49,14 +49,15 @@ On Linux, you can optionally run the CLI-only installer: `./scripts/install_cli_
 If you want *all timestamps* in one workbook (GitHub API events + local git commit/file events, with optional working-tree and ZFS snapshot mtimes), run:
 
 ```bash
-python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx --sources github,local
+python -m github_analyitics.timestamp_audit.timestamp_suite
 ```
+
+This writes a workbook to `data_reports/<timestamp>/github_analytics_timestamps_suite.xlsx` by default.
 
 With a date range:
 
 ```bash
-python -m github_analyitics.timestamp_audit.timestamp_suite --output github_analytics_timestamps_suite.xlsx \
-  --sources github,local --start-date 2024-01-01 --end-date 2024-12-31
+python -m github_analyitics.timestamp_audit.timestamp_suite --start-date 2024-01-01 --end-date 2024-12-31
 ```
 
 Convenience script:
