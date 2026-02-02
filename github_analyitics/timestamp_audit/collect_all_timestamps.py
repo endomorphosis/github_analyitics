@@ -50,6 +50,7 @@ def collect_local_git_and_zfs_sweep(
     zfs_granularity: str,
     zfs_excludes: List[str],
     zfs_max_seconds_per_root: Optional[float],
+    allowed_users: Optional[set[str]],
 ) -> Tuple[pd.DataFrame, List[Dict], List[Dict], List[Dict]]:
     """Run the local git + working-tree + ZFS snapshot sweep.
 
@@ -72,7 +73,7 @@ def collect_local_git_and_zfs_sweep(
         exclude_repos=None,
         max_depth=max_depth,
         use_session_estimation=False,
-        allowed_users=None,
+        allowed_users=allowed_users,
         include_working_tree_timestamps=include_working_tree_timestamps,
         working_tree_user=default_user,
         working_tree_excludes=working_tree_excludes,
@@ -602,6 +603,11 @@ def main() -> None:
         default="data_reports",
         help="Base directory for timestamped outputs when --output is not provided (default: data_reports)",
     )
+    parser.add_argument(
+        "--allowed-users-file",
+        default=None,
+        help="Path to allowed users list (one identifier per line). Only these users will appear in output sheets.",
+    )
     parser.add_argument("--start-date", default=None, help="Start date (YYYY-MM-DD) for git history")
     parser.add_argument("--end-date", default=None, help="End date (YYYY-MM-DD) for git history")
     parser.add_argument("--max-depth", type=int, default=None, help="Max directory depth to search (default: auto)")
@@ -655,6 +661,30 @@ def main() -> None:
 
     default_user = args.user or detect_github_username() or os.getenv('USER') or 'Unknown'
 
+    # Enforce allowed-users filtering for spreadsheet outputs.
+    allowed_users_path = None
+    if args.allowed_users_file:
+        allowed_users_path = Path(args.allowed_users_file).expanduser()
+    else:
+        # Prefer a repo-local allowlist if present.
+        for candidate in (Path.cwd() / 'allowed_users.txt', Path.cwd() / '_allowed_users.txt'):
+            if candidate.exists():
+                allowed_users_path = candidate
+                break
+
+    if not allowed_users_path or not allowed_users_path.exists():
+        raise SystemExit(
+            "Error: allowed users file not found. "
+            "Create allowed_users.txt (or _allowed_users.txt) or pass --allowed-users-file PATH."
+        )
+
+    allowed_users = LocalGitAnalytics.load_allowed_users(str(allowed_users_path))
+    if not allowed_users:
+        raise SystemExit(
+            f"Error: allowed users file is empty or invalid: {allowed_users_path}. "
+            "Add one username/email/name per line."
+        )
+
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
 
@@ -682,6 +712,7 @@ def main() -> None:
         zfs_granularity=args.zfs_granularity,
         zfs_excludes=zfs_excludes,
         zfs_max_seconds_per_root=args.zfs_max_seconds_per_root,
+        allowed_users=allowed_users,
     )
 
     with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
