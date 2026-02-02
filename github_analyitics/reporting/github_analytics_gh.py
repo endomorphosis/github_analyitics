@@ -207,12 +207,24 @@ class GitHubAnalytics:
         include_pr_review_comments: bool,
         include_pr_review_events: bool,
         include_issue_pr_comments: bool,
+        allowed_users: Optional[Set[str]] = None,
     ) -> pd.DataFrame:
+        allowed_lower: Optional[Set[str]] = None
         # Note: restrict_to_collaborators and filter_by_user_contribution are not enforced
         # in this gh-backed implementation (they require extra API calls).
         _ = (restrict_to_collaborators, filter_by_user_contribution)
 
         repos = self._list_repos(restrict_to_owner_namespace=restrict_to_owner_namespace)
+
+        if allowed_users:
+            allowed_lower = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
+
+        def is_allowed(user: str) -> bool:
+            if not allowed_lower:
+                return True
+            if not user:
+                return False
+            return str(user).strip().lower() in allowed_lower
 
         if include_repos:
             include_set = {r.strip() for r in include_repos if r and r.strip()}
@@ -256,6 +268,9 @@ class GitHubAnalytics:
                 if start_date and _to_utc(dt) < _to_utc(start_date):
                     continue
                 if end_date and _to_utc(dt) > _to_utc(end_date):
+                    continue
+
+                if not is_allowed(author_login):
                     continue
 
                 date = _date_key(dt)
@@ -313,56 +328,62 @@ class GitHubAnalytics:
                 if created_at and (not start_date or _to_utc(created_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(created_at) <= _to_utc(end_date)
                 ):
-                    date = _date_key(created_at)
-                    data[author][date]["prs_created"] += 1
-                    self.pr_events.append(
-                        {
-                            "repository": full_name,
-                            "number": number,
-                            "title": title,
-                            "author": author,
-                            "event_type": "created",
-                            "event_timestamp": _to_utc(created_at).isoformat().replace("+00:00", "Z"),
-                            "url": url,
-                        }
-                    )
+                    if is_allowed(author):
+                        date = _date_key(created_at)
+                        data[author][date]["prs_created"] += 1
+                        self.pr_events.append(
+                            {
+                                "repository": full_name,
+                                "number": number,
+                                "title": title,
+                                "author": author,
+                                "event_type": "created",
+                                "event_timestamp": _to_utc(created_at).isoformat().replace("+00:00", "Z"),
+                                "url": url,
+                            }
+                        )
 
                 if merged_at and (not start_date or _to_utc(merged_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(merged_at) <= _to_utc(end_date)
                 ):
-                    date = _date_key(merged_at)
-                    data[author][date]["prs_merged"] += 1
-                    self.pr_events.append(
-                        {
-                            "repository": full_name,
-                            "number": number,
-                            "title": title,
-                            "author": author,
-                            "event_type": "merged",
-                            "event_timestamp": _to_utc(merged_at).isoformat().replace("+00:00", "Z"),
-                            "url": url,
-                        }
-                    )
+                    if is_allowed(author):
+                        date = _date_key(merged_at)
+                        data[author][date]["prs_merged"] += 1
+                        self.pr_events.append(
+                            {
+                                "repository": full_name,
+                                "number": number,
+                                "title": title,
+                                "author": author,
+                                "event_type": "merged",
+                                "event_timestamp": _to_utc(merged_at).isoformat().replace("+00:00", "Z"),
+                                "url": url,
+                            }
+                        )
 
                 if closed_at and (not start_date or _to_utc(closed_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(closed_at) <= _to_utc(end_date)
                 ):
-                    self.pr_events.append(
-                        {
-                            "repository": full_name,
-                            "number": number,
-                            "title": title,
-                            "author": author,
-                            "event_type": "closed",
-                            "event_timestamp": _to_utc(closed_at).isoformat().replace("+00:00", "Z"),
-                            "url": url,
-                        }
-                    )
+                    if is_allowed(author):
+                        self.pr_events.append(
+                            {
+                                "repository": full_name,
+                                "number": number,
+                                "title": title,
+                                "author": author,
+                                "event_type": "closed",
+                                "event_timestamp": _to_utc(closed_at).isoformat().replace("+00:00", "Z"),
+                                "url": url,
+                            }
+                        )
 
                 if include_pr_comments and number is not None:
                     # PR conversation comments are issue comments.
                     for c in self._iter_issue_comments(full_name, int(number)):
                         c_user = ((c.get("user") or {}).get("login") or "Unknown")
+                        if not is_allowed(c_user):
+                            continue
+
                         c_dt = _parse_iso8601(c.get("created_at"))
                         if not c_dt:
                             continue
@@ -387,6 +408,9 @@ class GitHubAnalytics:
                     if include_pr_review_comments:
                         for c in self._iter_pr_review_comments(full_name, int(number)):
                             c_user = ((c.get("user") or {}).get("login") or "Unknown")
+                            if not is_allowed(c_user):
+                                continue
+
                             c_dt = _parse_iso8601(c.get("created_at"))
                             if not c_dt:
                                 continue
@@ -411,6 +435,9 @@ class GitHubAnalytics:
                     if include_pr_review_events:
                         for r in self._iter_pr_reviews(full_name, int(number)):
                             r_user = ((r.get("user") or {}).get("login") or "Unknown")
+                            if not is_allowed(r_user):
+                                continue
+
                             r_dt = _parse_iso8601(r.get("submitted_at"))
                             if not r_dt:
                                 continue
@@ -448,41 +475,46 @@ class GitHubAnalytics:
                 if created_at and (not start_date or _to_utc(created_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(created_at) <= _to_utc(end_date)
                 ):
-                    date = _date_key(created_at)
-                    data[author][date]["issues_created"] += 1
-                    self.issue_events.append(
-                        {
-                            "repository": full_name,
-                            "number": number,
-                            "title": title,
-                            "author": author,
-                            "event_type": "created",
-                            "event_timestamp": _to_utc(created_at).isoformat().replace("+00:00", "Z"),
-                            "url": url,
-                        }
-                    )
+                    if is_allowed(author):
+                        date = _date_key(created_at)
+                        data[author][date]["issues_created"] += 1
+                        self.issue_events.append(
+                            {
+                                "repository": full_name,
+                                "number": number,
+                                "title": title,
+                                "author": author,
+                                "event_type": "created",
+                                "event_timestamp": _to_utc(created_at).isoformat().replace("+00:00", "Z"),
+                                "url": url,
+                            }
+                        )
 
                 if closed_at and (not start_date or _to_utc(closed_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(closed_at) <= _to_utc(end_date)
                 ):
-                    date = _date_key(closed_at)
-                    data[author][date]["issues_closed"] += 1
-                    self.issue_events.append(
-                        {
-                            "repository": full_name,
-                            "number": number,
-                            "title": title,
-                            "author": author,
-                            "event_type": "closed",
-                            "event_timestamp": _to_utc(closed_at).isoformat().replace("+00:00", "Z"),
-                            "url": url,
-                        }
-                    )
+                    if is_allowed(author):
+                        date = _date_key(closed_at)
+                        data[author][date]["issues_closed"] += 1
+                        self.issue_events.append(
+                            {
+                                "repository": full_name,
+                                "number": number,
+                                "title": title,
+                                "author": author,
+                                "event_type": "closed",
+                                "event_timestamp": _to_utc(closed_at).isoformat().replace("+00:00", "Z"),
+                                "url": url,
+                            }
+                        )
 
                 # Comments
                 if number is not None:
                     for c in self._iter_issue_comments(full_name, int(number)):
                         c_user = ((c.get("user") or {}).get("login") or "Unknown")
+                        if not is_allowed(c_user):
+                            continue
+
                         c_dt = _parse_iso8601(c.get("created_at"))
                         if not c_dt:
                             continue

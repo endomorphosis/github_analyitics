@@ -39,7 +39,21 @@ from collect_all_timestamps import (
     rank_snapshot_roots,
 )
 from github_analytics import GitHubAnalytics
+from local_git_analytics import LocalGitAnalytics
 from zfs_snapshot_git_timestamps import DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES
+
+
+def _resolve_allowed_users_path(explicit: Optional[str]) -> Optional[Path]:
+    if explicit:
+        return Path(explicit).expanduser()
+
+    for candidate in (
+        Path.cwd() / 'allowed_users.txt',
+        Path.cwd() / '_allowed_users.txt',
+    ):
+        if candidate.exists():
+            return candidate
+    return None
 
 
 def parse_date(value: Optional[str]) -> Optional[datetime]:
@@ -168,6 +182,12 @@ def main() -> None:
     parser.add_argument('--start-date', default=None, help='Start date (YYYY-MM-DD)')
     parser.add_argument('--end-date', default=None, help='End date (YYYY-MM-DD)')
 
+    parser.add_argument(
+        '--allowed-users-file',
+        default=None,
+        help='Path to allowed users list (one identifier per line). Only these users will appear in output sheets.',
+    )
+
     parser.add_argument('--verbose', action='store_true', help='Verbose progress logging (prints phase timings and gh commands)')
     parser.add_argument(
         '--gh-timeout-seconds',
@@ -185,18 +205,8 @@ def main() -> None:
     # GitHub options
     parser.add_argument('--github-token', default=None, help='GitHub token (default: env GITHUB_TOKEN)')
     parser.add_argument('--github-username', default=None, help='GitHub username (default: env GITHUB_USERNAME)')
-    parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications (deprecated: this is now the default)')
-    parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup (deprecated: this is now the default)')
-    parser.add_argument(
-        '--include-file-modifications',
-        action='store_true',
-        help='GitHub: include file modification lists (slower; may hit API rate limits)',
-    )
-    parser.add_argument(
-        '--include-commit-stats',
-        action='store_true',
-        help='GitHub: include per-commit stats (slower; may hit API rate limits)',
-    )
+    parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications')
+    parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup')
     parser.add_argument('--disable-rate-limiting', action='store_true', help='GitHub: disable rate limiting')
     parser.add_argument('--include-pr-comments', action='store_true', help='GitHub: include PR comments + review comments')
     parser.add_argument('--skip-pr-review-comments', action='store_true', help='GitHub: do not include inline review comments')
@@ -240,10 +250,19 @@ def main() -> None:
     want_local = 'local' in sources
     want_zfs = 'zfs' in sources
 
-    # Safe defaults: timestamp suite is primarily about timestamps, not per-commit stats.
-    # Opt-in for expensive API calls via --include-*.
-    skip_commit_stats = bool(args.skip_commit_stats) or (not bool(getattr(args, 'include_commit_stats', False)))
-    skip_file_modifications = bool(args.skip_file_modifications) or (not bool(getattr(args, 'include_file_modifications', False)))
+    allowed_users_path = _resolve_allowed_users_path(args.allowed_users_file)
+    if not allowed_users_path or not allowed_users_path.exists():
+        raise SystemExit(
+            "Error: allowed users file not found. "
+            "Create allowed_users.txt (or _allowed_users.txt) or pass --allowed-users-file PATH."
+        )
+
+    allowed_users = LocalGitAnalytics.load_allowed_users(str(allowed_users_path))
+    if not allowed_users:
+        raise SystemExit(
+            f"Error: allowed users file is empty or invalid: {allowed_users_path}. "
+            "Add one username/email/name per line."
+        )
 
     if verbose:
         print(f"Sources enabled: {', '.join(sorted(sources))}")
@@ -320,6 +339,7 @@ def main() -> None:
             zfs_granularity=args.zfs_granularity,
             zfs_excludes=zfs_excludes,
             zfs_max_seconds_per_root=args.zfs_max_seconds_per_root,
+            allowed_users=allowed_users,
         )
 
         if verbose:
@@ -342,9 +362,9 @@ def main() -> None:
 
         if verbose:
             print(f"GitHub username: {username}")
-            if skip_commit_stats:
+            if args.skip_commit_stats:
                 print("GitHub: skipping per-commit stats")
-            if skip_file_modifications:
+            if args.skip_file_modifications:
                 print("GitHub: skipping file modification lists")
 
         gh = GitHubAnalytics("", username, enable_rate_limiting=not args.disable_rate_limiting)
@@ -354,8 +374,8 @@ def main() -> None:
             include_repos=None,
             exclude_repos=None,
             filter_by_user_contribution=None,
-            skip_file_modifications=skip_file_modifications,
-            skip_commit_stats=skip_commit_stats,
+            skip_file_modifications=args.skip_file_modifications,
+            skip_commit_stats=args.skip_commit_stats,
             restrict_to_collaborators=True,
             restrict_to_owner_namespace=True,
             fast_mode=False,
@@ -363,6 +383,7 @@ def main() -> None:
             include_pr_review_comments=not args.skip_pr_review_comments,
             include_pr_review_events=args.include_pr_review_events,
             include_issue_pr_comments=args.include_pr_issue_comments,
+            allowed_users=set(allowed_users),
         )
 
         gh_commit_events, gh_pr_events, gh_issue_events = normalize_github_events(
