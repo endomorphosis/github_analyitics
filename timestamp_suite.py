@@ -227,10 +227,10 @@ def main() -> None:
 
     parser.add_argument('--zfs-snapshot-root', default=None, help='ZFS snapshot root path (default: auto-detect)')
     parser.add_argument('--no-sudo', action='store_true', help='ZFS: do not prompt for sudo / re-exec under sudo')
-    parser.add_argument('--all-zfs-snapshot-roots', action='store_true', help='ZFS: scan all detected roots')
-    parser.add_argument('--zfs-snapshot-roots-limit', type=int, default=5, help='ZFS: max detected roots to scan')
-    parser.add_argument('--zfs-scan-mode', choices=['match-repos-path', 'full'], default='match-repos-path')
-    parser.add_argument('--zfs-snapshots-limit', type=int, default=25, help='ZFS: max snapshots per root (0=all)')
+    parser.add_argument('--all-zfs-snapshot-roots', action='store_true', help='ZFS: scan all detected roots (deprecated; default behavior is now exhaustive)')
+    parser.add_argument('--zfs-snapshot-roots-limit', type=int, default=0, help='ZFS: max detected roots to scan (0=all; default: 0)')
+    parser.add_argument('--zfs-scan-mode', choices=['match-repos-path', 'full'], default='full')
+    parser.add_argument('--zfs-snapshots-limit', type=int, default=0, help='ZFS: max snapshots per root (0=all; default: 0)')
     parser.add_argument('--zfs-granularity', choices=['repo_index', 'repo_root', 'file'], default='file')
     parser.add_argument('--zfs-exclude', action='append', default=[], help='ZFS: exclude dir name (repeatable)')
     parser.add_argument('--zfs-max-seconds-per-root', type=float, default=None, help='ZFS: time budget per root')
@@ -313,10 +313,9 @@ def main() -> None:
             snapshot_roots = detect_zfs_snapshot_roots(args.zfs_snapshot_root)
             if args.zfs_snapshot_root is None and snapshot_roots:
                 snapshot_roots = rank_snapshot_roots(snapshot_roots)
-                if not args.all_zfs_snapshot_roots:
-                    limit = int(args.zfs_snapshot_roots_limit)
-                    if limit > 0:
-                        snapshot_roots = snapshot_roots[: max(limit, 1)]
+                limit = 0 if args.all_zfs_snapshot_roots else int(args.zfs_snapshot_roots_limit)
+                if limit > 0:
+                    snapshot_roots = snapshot_roots[: max(limit, 1)]
 
             if verbose:
                 if snapshot_roots:

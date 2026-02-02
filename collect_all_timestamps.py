@@ -552,25 +552,25 @@ def main() -> None:
     parser.add_argument(
         "--all-zfs-snapshot-roots",
         action="store_true",
-        help="Scan every detected ZFS snapshot root (can be slow)",
+        help="Scan every detected ZFS snapshot root (deprecated; default behavior is now exhaustive)",
     )
     parser.add_argument(
         "--zfs-snapshot-roots-limit",
         type=int,
-        default=5,
-        help="Max number of detected ZFS snapshot roots to scan (default: 5)",
+        default=0,
+        help="Max number of detected ZFS snapshot roots to scan (0=all; default: 0)",
     )
     parser.add_argument(
         "--zfs-scan-mode",
         choices=["match-repos-path", "full"],
-        default="match-repos-path",
-        help="How to scan within each snapshot (default: match-repos-path)",
+        default="full",
+        help="How to scan within each snapshot (default: full)",
     )
     parser.add_argument(
         "--zfs-snapshots-limit",
         type=int,
-        default=25,
-        help="Max snapshots to scan per root (default: 25)",
+        default=0,
+        help="Max snapshots to scan per root (0=all; default: 0)",
     )
     parser.add_argument(
         "--zfs-granularity",
@@ -654,10 +654,9 @@ def main() -> None:
 
     if args.zfs_snapshot_root is None and snapshot_roots:
         snapshot_roots = rank_snapshot_roots(snapshot_roots)
-        if not args.all_zfs_snapshot_roots:
-            limit = int(args.zfs_snapshot_roots_limit)
-            if limit > 0:
-                snapshot_roots = snapshot_roots[: max(limit, 1)]
+        limit = 0 if args.all_zfs_snapshot_roots else int(args.zfs_snapshot_roots_limit)
+        if limit > 0:
+            snapshot_roots = snapshot_roots[: max(limit, 1)]
 
     # If we run under sudo, prefer the original invoking user.
     default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
