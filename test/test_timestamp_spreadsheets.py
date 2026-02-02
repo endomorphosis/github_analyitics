@@ -83,6 +83,34 @@ def _create_git_repo(base_dir: Path, name: str, *, commit_dt: datetime) -> Path:
     return repo
 
 
+def _git_commit_with_message(
+    repo: Path,
+    *,
+    filename: str,
+    content: str,
+    author_name: str,
+    author_email: str,
+    commit_dt: datetime,
+    message: str,
+) -> None:
+    (repo / filename).write_text(content, encoding="utf-8")
+    _run(["git", "add", filename], cwd=repo)
+
+    msg_path = repo / "_msg.txt"
+    msg_path.write_text(message, encoding="utf-8")
+
+    env = os.environ.copy()
+    iso = commit_dt.replace(tzinfo=timezone.utc).isoformat()
+    env["GIT_AUTHOR_DATE"] = iso
+    env["GIT_COMMITTER_DATE"] = iso
+    env["GIT_AUTHOR_NAME"] = author_name
+    env["GIT_AUTHOR_EMAIL"] = author_email
+    env["GIT_COMMITTER_NAME"] = author_name
+    env["GIT_COMMITTER_EMAIL"] = author_email
+
+    _run(["git", "commit", "-F", str(msg_path)], cwd=repo, env=env)
+
+
 def _read_xlsx_sheets(path: Path) -> set[str]:
     xls = pd.ExcelFile(path)
     return set(xls.sheet_names)
@@ -313,6 +341,121 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             self.assertIn("source", df.columns)
             self.assertTrue((df["source"] == "local_git").any())
             _assert_timestamp_column_parseable(self, df, "event_timestamp")
+
+    @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
+    def test_copilot_authored_commit_is_attributed_to_coauthor_invoker(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 6, 12, 0, 0))
+
+            _git_commit_with_message(
+                repo,
+                filename="hello.txt",
+                content="hello from copilot\n",
+                author_name="GitHub Copilot",
+                author_email="copilot@github.com",
+                commit_dt=datetime(2026, 1, 6, 12, 5, 0),
+                message=(
+                    "copilot change\n\n"
+                    "Co-authored-by: Real User <real@example.com>\n"
+                ),
+            )
+
+            analytics = LocalGitAnalytics(str(base))
+            analytics.analyze_all_repositories(max_depth=2)
+
+            commit_events = analytics.commit_events or []
+            file_events = analytics.file_events or []
+
+            self.assertTrue(
+                any(
+                    (ev.get("author") == "GitHub Copilot")
+                    and (ev.get("attributed_user") == "Real User")
+                    and (ev.get("copilot_involved") is True)
+                    and (ev.get("invoker_source") == "co-author")
+                    for ev in commit_events
+                ),
+                "Expected Copilot-authored commit to be attributed to co-author invoker",
+            )
+            self.assertTrue(
+                any(
+                    (ev.get("author") == "GitHub Copilot")
+                    and (ev.get("attributed_user") == "Real User")
+                    and (ev.get("copilot_involved") is True)
+                    and (ev.get("invoker_source") == "co-author")
+                    for ev in file_events
+                ),
+                "Expected Copilot-authored file event to be attributed to co-author invoker",
+            )
+
+    @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
+    def test_copilot_authored_commit_can_be_attributed_via_mapping_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 7, 12, 0, 0))
+
+            mapping = base / "copilot_invokers.json"
+            mapping.write_text('{"copilot@github.com": "Real User"}', encoding="utf-8")
+
+            _git_commit_with_message(
+                repo,
+                filename="hello.txt",
+                content="hello from copilot (mapped)\n",
+                author_name="GitHub Copilot",
+                author_email="copilot@github.com",
+                commit_dt=datetime(2026, 1, 7, 12, 5, 0),
+                message="copilot change (mapped)\n",
+            )
+
+            analytics = LocalGitAnalytics(str(base), copilot_invokers_path=str(mapping))
+            analytics.analyze_all_repositories(max_depth=2)
+            commit_events = analytics.commit_events or []
+
+            self.assertTrue(
+                any(
+                    (ev.get("author") == "GitHub Copilot")
+                    and (ev.get("attributed_user") == "Real User")
+                    and (ev.get("copilot_involved") is True)
+                    and (ev.get("invoker_source") == "mapping")
+                    for ev in commit_events
+                ),
+                "Expected Copilot-authored commit to be attributed via mapping",
+            )
+
+    @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
+    def test_bot_authored_commit_with_copilot_trailer_is_attributed_to_human(self):
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 8, 12, 0, 0))
+
+            _git_commit_with_message(
+                repo,
+                filename="hello.txt",
+                content="hello from bot\n",
+                author_name="github-actions[bot]",
+                author_email="github-actions[bot]@users.noreply.github.com",
+                commit_dt=datetime(2026, 1, 8, 12, 5, 0),
+                message=(
+                    "bot change\n\n"
+                    "Co-authored-by: GitHub Copilot <copilot@github.com>\n"
+                    "Co-authored-by: Real User <real@example.com>\n"
+                ),
+            )
+
+            analytics = LocalGitAnalytics(str(base))
+            analytics.analyze_all_repositories(max_depth=2)
+            commit_events = analytics.commit_events or []
+
+            self.assertTrue(
+                any(
+                    (ev.get("author") == "github-actions[bot]")
+                    and (ev.get("attributed_user") == "Real User")
+                    and (ev.get("copilot_involved") is True)
+                    and (ev.get("invoker_source") == "co-author")
+                    for ev in commit_events
+                ),
+                "Expected bot-authored Copilot commit to be attributed to human co-author",
+            )
 
     def test_github_analytics_report_can_be_written_from_mocked_data(self):
         from github_analyitics.reporting.github_analytics import GitHubAnalytics
