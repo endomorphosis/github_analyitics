@@ -11,6 +11,7 @@ import sys
 import json
 import csv
 import subprocess
+import time
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
@@ -345,19 +346,59 @@ class LocalGitAnalytics:
         if end_date:
             cmd.append(f'--until={end_date.isoformat()}')
         
+        watchdog_seconds = 0.0
         try:
-            result = subprocess.run(
+            watchdog_seconds = float(os.getenv('GITHUB_ANALYTICS_LOCAL_PROGRESS_EVERY_SECONDS', '60') or '60')
+        except Exception:
+            watchdog_seconds = 60.0
+
+        start_time = time.time()
+        last_heartbeat = start_time
+        out_chunks: List[str] = []
+        err_chunks: List[str] = []
+
+        try:
+            proc = subprocess.Popen(
                 cmd,
                 cwd=repo_path,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                check=True
             )
-            
-            return self.parse_git_log(result.stdout, copilot_info)
-            
+
+            while True:
+                timeout = watchdog_seconds if watchdog_seconds and watchdog_seconds > 0 else None
+                try:
+                    stdout, stderr = proc.communicate(timeout=timeout)
+                    if stdout:
+                        out_chunks.append(stdout)
+                    if stderr:
+                        err_chunks.append(stderr)
+                    break
+                except subprocess.TimeoutExpired as e:
+                    if e.output:
+                        out_chunks.append(e.output)
+                    if e.stderr:
+                        err_chunks.append(e.stderr)
+
+                    if watchdog_seconds and watchdog_seconds > 0:
+                        now = time.time()
+                        if (now - last_heartbeat) >= max(watchdog_seconds, 1.0):
+                            elapsed = now - start_time
+                            print(f"[LOCAL][git log] repo={repo_path.name} elapsed={elapsed:.1f}s (still running)")
+                            last_heartbeat = now
+
+            rc = proc.returncode
+            stdout_all = ''.join(out_chunks)
+            stderr_all = ''.join(err_chunks)
+
+            if rc != 0:
+                raise subprocess.CalledProcessError(rc, cmd, output=stdout_all, stderr=stderr_all)
+
+            return self.parse_git_log(stdout_all, copilot_info)
+
         except subprocess.CalledProcessError as e:
             print(f"Warning: Error reading git log from {repo_path.name}: {e}")
             return []

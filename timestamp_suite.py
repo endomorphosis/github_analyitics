@@ -195,6 +195,12 @@ def main() -> None:
 
     parser.add_argument('--verbose', action='store_true', help='Verbose progress logging (prints phase timings and gh commands)')
     parser.add_argument(
+        '--local-progress-every-seconds',
+        type=float,
+        default=60.0,
+        help='Local git: watchdog heartbeat interval while running `git log` (0 disables; default: 60)',
+    )
+    parser.add_argument(
         '--gh-timeout-seconds',
         type=float,
         default=120.0,
@@ -213,17 +219,41 @@ def main() -> None:
     parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications')
     parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup')
     parser.add_argument('--disable-rate-limiting', action='store_true', help='GitHub: disable rate limiting')
-    parser.add_argument('--include-pr-comments', action='store_true', help='GitHub: include PR comments + review comments')
+    parser.add_argument(
+        '--include-pr-comments',
+        action='store_true',
+        default=True,
+        help='GitHub: include PR comments + review comments (deprecated; enabled by default; use --skip-pr-comments to disable)',
+    )
+    parser.add_argument('--skip-pr-comments', action='store_true', help='GitHub: do not include PR comments/review comments')
     parser.add_argument('--skip-pr-review-comments', action='store_true', help='GitHub: do not include inline review comments')
-    parser.add_argument('--include-pr-review-events', action='store_true', help='GitHub: include PR review submission events')
-    parser.add_argument('--include-pr-issue-comments', action='store_true', help='GitHub: include PR comments via Issues API')
+    parser.add_argument(
+        '--include-pr-review-events',
+        action='store_true',
+        default=True,
+        help='GitHub: include PR review submission events (deprecated; enabled by default; use --skip-pr-review-events to disable)',
+    )
+    parser.add_argument('--skip-pr-review-events', action='store_true', help='GitHub: do not include PR review submission events')
+    parser.add_argument(
+        '--include-pr-issue-comments',
+        action='store_true',
+        default=True,
+        help='GitHub: include PR comments via Issues API (deprecated; enabled by default; use --skip-pr-issue-comments to disable)',
+    )
+    parser.add_argument('--skip-pr-issue-comments', action='store_true', help='GitHub: do not include PR comments via Issues API')
 
     # Local/ZFS options
     parser.add_argument('--repos-path', default=None, help='Local repo scan base path (default: auto)')
     parser.add_argument('--max-depth', type=int, default=None, help='Local repo scan max depth (default: auto)')
     parser.add_argument('--user', default=None, help='Default user attribution for non-git-history sources')
 
-    parser.add_argument('--include-working-tree-timestamps', action='store_true', help='Include working tree mtimes')
+    parser.add_argument(
+        '--include-working-tree-timestamps',
+        action='store_true',
+        default=True,
+        help='Include working tree mtimes (deprecated; enabled by default; use --skip-working-tree-timestamps to disable)',
+    )
+    parser.add_argument('--skip-working-tree-timestamps', action='store_true', help='Do not include working tree mtimes')
     parser.add_argument('--working-tree-exclude', action='append', default=[], help='Working tree exclude dir name (repeatable)')
 
     parser.add_argument(
@@ -250,6 +280,12 @@ def main() -> None:
 
     args = parser.parse_args()
 
+    # Enable watchdog heartbeats during slow local `git log` calls.
+    try:
+        os.environ['GITHUB_ANALYTICS_LOCAL_PROGRESS_EVERY_SECONDS'] = str(float(args.local_progress_every_seconds))
+    except Exception:
+        os.environ['GITHUB_ANALYTICS_LOCAL_PROGRESS_EVERY_SECONDS'] = '60'
+
     verbose = bool(getattr(args, 'verbose', False))
     if verbose:
         os.environ['GITHUB_ANALYTICS_VERBOSE'] = '1'
@@ -266,6 +302,11 @@ def main() -> None:
     want_github = 'github' in sources
     want_local = 'local' in sources
     want_zfs = 'zfs' in sources
+
+    include_working_tree_timestamps = not bool(getattr(args, 'skip_working_tree_timestamps', False))
+    include_pr_comments = not bool(getattr(args, 'skip_pr_comments', False))
+    include_pr_review_events = not bool(getattr(args, 'skip_pr_review_events', False))
+    include_pr_issue_comments = not bool(getattr(args, 'skip_pr_issue_comments', False))
 
     allowed_users_path = _resolve_allowed_users_path(args.allowed_users_file)
     if not allowed_users_path or not allowed_users_path.exists():
@@ -410,7 +451,7 @@ def main() -> None:
             start_date=start_date,
             end_date=end_date,
             default_user=default_user,
-            include_working_tree_timestamps=args.include_working_tree_timestamps,
+            include_working_tree_timestamps=include_working_tree_timestamps,
             working_tree_excludes=args.working_tree_exclude,
             snapshot_roots=snapshot_roots,
             allow_sudo=allow_sudo,
@@ -459,10 +500,10 @@ def main() -> None:
             restrict_to_collaborators=True,
             restrict_to_owner_namespace=True,
             fast_mode=False,
-            include_pr_comments=args.include_pr_comments,
-            include_pr_review_comments=not args.skip_pr_review_comments,
-            include_pr_review_events=args.include_pr_review_events,
-            include_issue_pr_comments=args.include_pr_issue_comments,
+            include_pr_comments=include_pr_comments,
+            include_pr_review_comments=(include_pr_comments and (not args.skip_pr_review_comments)),
+            include_pr_review_events=include_pr_review_events,
+            include_issue_pr_comments=include_pr_issue_comments,
             allowed_users=set(allowed_users),
         )
 

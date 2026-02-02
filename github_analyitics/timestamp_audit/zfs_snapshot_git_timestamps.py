@@ -11,6 +11,7 @@ import os
 import subprocess
 import shutil
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 import configparser
@@ -433,6 +434,9 @@ def collect_snapshot_rows(
     user: str,
     excludes: Iterable[str],
     granularity: ZfsGranularity = 'file',
+    *,
+    verbose: bool = False,
+    progress_every_seconds: Optional[float] = None,
 ) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     repo_id = infer_repository_identifier(repo_root)
@@ -508,6 +512,11 @@ def collect_snapshot_rows(
             rows[-1]["raw_email"] = raw_email
         return rows
 
+    start_time = time.time()
+    last_heartbeat = start_time
+    files_seen = 0
+    last_rel_path: Optional[str] = None
+
     for path in iter_files(repo_root, excludes):
         try:
             stat = path.stat()
@@ -516,6 +525,7 @@ def collect_snapshot_rows(
         mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
 
         rel_path = str(path.relative_to(repo_root)).replace('\\', '/')
+        last_rel_path = rel_path
 
         author_name = user
         author_email = ''
@@ -564,6 +574,18 @@ def collect_snapshot_rows(
             }
         )
 
+        files_seen += 1
+        if verbose and progress_every_seconds and progress_every_seconds > 0:
+            now = time.time()
+            if (now - last_heartbeat) >= float(progress_every_seconds):
+                elapsed = now - start_time
+                rate = (files_seen / elapsed) if elapsed > 0 else 0.0
+                print(
+                    f"[ZFS][file] snapshot={snapshot_name} repo={repo_id} files={files_seen} "
+                    f"rows={len(rows)} elapsed={elapsed:.1f}s rate={rate:.2f}/s last={last_rel_path}"
+                )
+                last_heartbeat = now
+
         if raw_author is not None:
             rows[-1]["raw_author"] = raw_author
         if raw_email is not None:
@@ -601,6 +623,17 @@ def main() -> None:
         choices=['file', 'repo_index', 'repo_root'],
         default='file',
         help="Event granularity: file (slow), repo_index (fast), repo_root (fast)",
+    )
+    parser.add_argument(
+        "--progress-every-seconds",
+        type=float,
+        default=30.0,
+        help="When scanning, print a watchdog heartbeat every N seconds (0 disables; default: 30)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Print more progress details during snapshot scanning",
     )
     parser.add_argument(
         "--exclude",
@@ -666,10 +699,20 @@ def main() -> None:
         if not repos:
             continue
         print(f"Snapshot {snap.name}: {len(repos)} repos")
-        for repo in repos:
+        for repo_index, repo in enumerate(repos, 1):
+            if args.verbose:
+                print(f"[ZFS] snapshot={snap.name} repo {repo_index}/{len(repos)}: {repo}")
             try:
                 all_rows.extend(
-                    collect_snapshot_rows(snap.name, repo, args.user, excludes, granularity=args.granularity)
+                    collect_snapshot_rows(
+                        snap.name,
+                        repo,
+                        args.user,
+                        excludes,
+                        granularity=args.granularity,
+                        verbose=bool(args.verbose),
+                        progress_every_seconds=float(args.progress_every_seconds),
+                    )
                 )
             except PermissionError:
                 maybe_reexec_with_sudo(f"read files in snapshot repo {repo}", enabled=allow_sudo)

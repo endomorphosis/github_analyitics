@@ -50,6 +50,8 @@ def collect_local_git_and_zfs_sweep(
     zfs_granularity: str,
     zfs_excludes: List[str],
     zfs_max_seconds_per_root: Optional[float],
+    zfs_progress_every_seconds: Optional[float],
+    verbose: bool,
     allowed_users: Optional[set[str]],
 ) -> Tuple[pd.DataFrame, List[Dict], List[Dict], List[Dict]]:
     """Run the local git + working-tree + ZFS snapshot sweep.
@@ -112,6 +114,8 @@ def collect_local_git_and_zfs_sweep(
                         snapshots_limit=max(int(zfs_snapshots_limit), 0),
                         granularity=zfs_granularity,
                         max_seconds=zfs_max_seconds_per_root,
+                        progress_every_seconds=zfs_progress_every_seconds,
+                        verbose=verbose,
                     )
                 )
             except PermissionError:
@@ -487,6 +491,9 @@ def collect_zfs_events(
     snapshots_limit: int,
     granularity: str,
     max_seconds: Optional[float],
+    *,
+    progress_every_seconds: Optional[float] = None,
+    verbose: bool = False,
 ) -> List[Dict]:
     all_rows: List[Dict] = []
     snapshots = list_snapshots(snapshot_root)
@@ -501,13 +508,18 @@ def collect_zfs_events(
         snapshots = snapshots[:snapshots_limit]
 
     start_time = time.time()
+    last_heartbeat = start_time
+
+    if verbose:
+        limit_text = str(snapshots_limit) if snapshots_limit > 0 else 'all'
+        print(f"[ZFS] Root: {snapshot_root} (snapshots={len(snapshots)} scanning={limit_text} granularity={granularity})")
 
     for snap_index, snap in enumerate(snapshots, 1):
         if max_seconds is not None and (time.time() - start_time) > max_seconds:
             print(f"[ZFS] Time budget reached for {snapshot_root}; stopping early.")
             break
 
-        if snap_index % 10 == 0:
+        if verbose and (snap_index == 1 or snap_index % 10 == 0):
             print(f"[ZFS] {snapshot_root}: snapshot {snap_index}/{len(snapshots)} ({snap.name})")
 
         snap_dt = parse_snapshot_date_from_name(snap.name)
@@ -527,7 +539,11 @@ def collect_zfs_events(
             repos = [scan_base]
         else:
             repos = find_git_roots(scan_base, max_depth)
-        for repo in repos:
+        for repo_index, repo in enumerate(repos, 1):
+            if verbose:
+                print(f"[ZFS] snapshot={snap.name} repo {repo_index}/{len(repos)}: {repo}")
+
+            before = len(all_rows)
             all_rows.extend(
                 collect_snapshot_rows(
                     snap.name,
@@ -535,8 +551,23 @@ def collect_zfs_events(
                     user,
                     excludes,
                     granularity=granularity,
+                    verbose=verbose,
+                    progress_every_seconds=progress_every_seconds,
                 )
             )
+            if verbose:
+                added = len(all_rows) - before
+                print(f"[ZFS] snapshot={snap.name} repo {repo_index}/{len(repos)} rows_added={added}")
+
+            if verbose and progress_every_seconds and progress_every_seconds > 0:
+                now = time.time()
+                if (now - last_heartbeat) >= float(progress_every_seconds):
+                    elapsed = now - start_time
+                    print(
+                        f"[ZFS][heartbeat] root={snapshot_root} snapshot={snap_index}/{len(snapshots)} "
+                        f"rows={len(all_rows)} elapsed={elapsed:.1f}s"
+                    )
+                    last_heartbeat = now
     return all_rows
 
 
@@ -594,6 +625,17 @@ def main() -> None:
         help="Optional time budget per ZFS snapshot root (seconds).",
     )
     parser.add_argument(
+        "--zfs-progress-every-seconds",
+        type=float,
+        default=30.0,
+        help="When scanning ZFS, print a watchdog heartbeat every N seconds (0 disables; default: 30)",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Verbose progress logging",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Output Excel file (default: data_reports/<timestamp>/local_git_timestamps.xlsx)",
@@ -615,7 +657,13 @@ def main() -> None:
     parser.add_argument(
         "--include-working-tree-timestamps",
         action="store_true",
-        help="Include filesystem mtime events from non-bare working trees",
+        default=True,
+        help="Include filesystem mtime events from non-bare working trees (deprecated; enabled by default; use --skip-working-tree-timestamps to disable)",
+    )
+    parser.add_argument(
+        "--skip-working-tree-timestamps",
+        action="store_true",
+        help="Do not include filesystem mtime events from working trees",
     )
     parser.add_argument(
         "--working-tree-exclude",
@@ -631,6 +679,8 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    include_working_tree_timestamps = not bool(getattr(args, 'skip_working_tree_timestamps', False))
 
     if args.zfs_full_scan:
         args.all_zfs_snapshot_roots = True
@@ -722,7 +772,7 @@ def main() -> None:
         start_date=start_date,
         end_date=end_date,
         default_user=default_user,
-        include_working_tree_timestamps=args.include_working_tree_timestamps,
+        include_working_tree_timestamps=include_working_tree_timestamps,
         working_tree_excludes=args.working_tree_exclude,
         snapshot_roots=snapshot_roots,
         allow_sudo=allow_sudo,
@@ -731,6 +781,8 @@ def main() -> None:
         zfs_granularity=args.zfs_granularity,
         zfs_excludes=zfs_excludes,
         zfs_max_seconds_per_root=args.zfs_max_seconds_per_root,
+        zfs_progress_every_seconds=float(args.zfs_progress_every_seconds),
+        verbose=bool(args.verbose),
         allowed_users=allowed_users,
     )
 

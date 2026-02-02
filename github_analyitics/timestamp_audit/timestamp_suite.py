@@ -253,6 +253,12 @@ def main() -> None:
 
     parser.add_argument('--verbose', action='store_true', help='Verbose progress logging (prints phase timings and gh commands)')
     parser.add_argument(
+        '--local-progress-every-seconds',
+        type=float,
+        default=60.0,
+        help='Local git: watchdog heartbeat interval while running `git log` (0 disables; default: 60)',
+    )
+    parser.add_argument(
         '--gh-timeout-seconds',
         type=float,
         default=120.0,
@@ -271,17 +277,41 @@ def main() -> None:
     parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications')
     parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup')
     parser.add_argument('--disable-rate-limiting', action='store_true', help='GitHub: disable rate limiting')
-    parser.add_argument('--include-pr-comments', action='store_true', help='GitHub: include PR comments + review comments')
+    parser.add_argument(
+        '--include-pr-comments',
+        action='store_true',
+        default=True,
+        help='GitHub: include PR comments + review comments (deprecated; enabled by default; use --skip-pr-comments to disable)',
+    )
+    parser.add_argument('--skip-pr-comments', action='store_true', help='GitHub: do not include PR comments/review comments')
     parser.add_argument('--skip-pr-review-comments', action='store_true', help='GitHub: do not include inline review comments')
-    parser.add_argument('--include-pr-review-events', action='store_true', help='GitHub: include PR review submission events')
-    parser.add_argument('--include-pr-issue-comments', action='store_true', help='GitHub: include PR comments via Issues API')
+    parser.add_argument(
+        '--include-pr-review-events',
+        action='store_true',
+        default=True,
+        help='GitHub: include PR review submission events (deprecated; enabled by default; use --skip-pr-review-events to disable)',
+    )
+    parser.add_argument('--skip-pr-review-events', action='store_true', help='GitHub: do not include PR review submission events')
+    parser.add_argument(
+        '--include-pr-issue-comments',
+        action='store_true',
+        default=True,
+        help='GitHub: include PR comments via Issues API (deprecated; enabled by default; use --skip-pr-issue-comments to disable)',
+    )
+    parser.add_argument('--skip-pr-issue-comments', action='store_true', help='GitHub: do not include PR comments via Issues API')
 
     # Local/ZFS options
     parser.add_argument('--repos-path', default=None, help='Local repo scan base path (default: auto)')
     parser.add_argument('--max-depth', type=int, default=None, help='Local repo scan max depth (default: auto)')
     parser.add_argument('--user', default=None, help='Default user attribution for non-git-history sources')
 
-    parser.add_argument('--include-working-tree-timestamps', action='store_true', help='Include working tree mtimes')
+    parser.add_argument(
+        '--include-working-tree-timestamps',
+        action='store_true',
+        default=True,
+        help='Include working tree mtimes (deprecated; enabled by default; use --skip-working-tree-timestamps to disable)',
+    )
+    parser.add_argument('--skip-working-tree-timestamps', action='store_true', help='Do not include working tree mtimes')
     parser.add_argument('--working-tree-exclude', action='append', default=[], help='Working tree exclude dir name (repeatable)')
 
     parser.add_argument(
@@ -305,8 +335,21 @@ def main() -> None:
     parser.add_argument('--zfs-granularity', choices=['repo_index', 'repo_root', 'file'], default='file')
     parser.add_argument('--zfs-exclude', action='append', default=[], help='ZFS: exclude dir name (repeatable)')
     parser.add_argument('--zfs-max-seconds-per-root', type=float, default=None, help='ZFS: time budget per root')
+    parser.add_argument(
+        '--zfs-progress-every-seconds',
+        type=float,
+        default=30.0,
+        help='ZFS: when --verbose, print a watchdog heartbeat every N seconds (0 disables; default: 30)',
+    )
 
     args = parser.parse_args()
+
+    # Enable watchdog heartbeats during slow local `git log` calls.
+    # This is intentionally not gated behind --verbose so default runs are still comprehensible.
+    try:
+        os.environ['GITHUB_ANALYTICS_LOCAL_PROGRESS_EVERY_SECONDS'] = str(float(args.local_progress_every_seconds))
+    except Exception:
+        os.environ['GITHUB_ANALYTICS_LOCAL_PROGRESS_EVERY_SECONDS'] = '60'
 
     verbose = bool(getattr(args, 'verbose', False))
     if verbose:
@@ -325,6 +368,12 @@ def main() -> None:
     want_local = 'local' in sources
     want_zfs = 'zfs' in sources
 
+    # Comprehensive defaults, with opt-out flags.
+    include_working_tree_timestamps = not bool(getattr(args, 'skip_working_tree_timestamps', False))
+    include_pr_comments = not bool(getattr(args, 'skip_pr_comments', False))
+    include_pr_review_events = not bool(getattr(args, 'skip_pr_review_events', False))
+    include_pr_issue_comments = not bool(getattr(args, 'skip_pr_issue_comments', False))
+
     allowed_users_path = _resolve_allowed_users_path(args.allowed_users_file)
     if not allowed_users_path or not allowed_users_path.exists():
         raise SystemExit(
@@ -341,6 +390,7 @@ def main() -> None:
 
     if verbose:
         print(f"Sources enabled: {', '.join(sorted(sources))}")
+        print(f"Source flags: want_github={want_github} want_local={want_local} want_zfs={want_zfs}")
 
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
@@ -525,13 +575,15 @@ def main() -> None:
 
         zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
 
+        # Comprehensive default: local git history scan is included whenever we run the
+        # local/ZFS sweep. ZFS progress is handled inside the sweep functions.
         local_summary_df, local_commit_events, local_file_events, zfs_rows = collect_local_git_and_zfs_sweep(
             repos_path=repos_path,
             max_depth=max_depth,
             start_date=start_date,
             end_date=end_date,
             default_user=default_user,
-            include_working_tree_timestamps=args.include_working_tree_timestamps,
+            include_working_tree_timestamps=include_working_tree_timestamps,
             working_tree_excludes=args.working_tree_exclude,
             snapshot_roots=snapshot_roots,
             allow_sudo=allow_sudo,
@@ -540,6 +592,8 @@ def main() -> None:
             zfs_granularity=args.zfs_granularity,
             zfs_excludes=zfs_excludes,
             zfs_max_seconds_per_root=args.zfs_max_seconds_per_root,
+            zfs_progress_every_seconds=(float(args.zfs_progress_every_seconds) if verbose else None),
+            verbose=verbose,
             allowed_users=allowed_users,
         )
 
@@ -567,6 +621,12 @@ def main() -> None:
                 print("GitHub: skipping per-commit stats")
             if args.skip_file_modifications:
                 print("GitHub: skipping file modification lists")
+            if not include_pr_comments:
+                print("GitHub: skipping PR comments")
+            if not include_pr_review_events:
+                print("GitHub: skipping PR review submission events")
+            if not include_pr_issue_comments:
+                print("GitHub: skipping PR issue comments")
 
         gh = GitHubAnalytics("", username, enable_rate_limiting=not args.disable_rate_limiting)
         gh_summary_df = gh.analyze_all_repositories(
@@ -580,10 +640,10 @@ def main() -> None:
             restrict_to_collaborators=True,
             restrict_to_owner_namespace=True,
             fast_mode=False,
-            include_pr_comments=args.include_pr_comments,
-            include_pr_review_comments=not args.skip_pr_review_comments,
-            include_pr_review_events=args.include_pr_review_events,
-            include_issue_pr_comments=args.include_pr_issue_comments,
+            include_pr_comments=include_pr_comments,
+            include_pr_review_comments=(include_pr_comments and (not args.skip_pr_review_comments)),
+            include_pr_review_events=include_pr_review_events,
+            include_issue_pr_comments=include_pr_issue_comments,
             allowed_users=set(allowed_users),
         )
 
