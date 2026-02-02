@@ -44,6 +44,7 @@ from collect_all_timestamps import (
 from github_analytics import GitHubAnalytics
 from local_git_analytics import LocalGitAnalytics
 from zfs_snapshot_git_timestamps import DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES
+from zfs_snapshot_git_timestamps import list_snapshots
 
 
 def _resolve_allowed_users_path(explicit: Optional[str]) -> Optional[Path]:
@@ -307,6 +308,7 @@ def main() -> None:
             print(f"ZFS enabled: {want_zfs} (allow_sudo={allow_sudo})")
 
         snapshot_roots: List[Path] = []
+        zfs_scan_summary: List[Dict] = []
         if want_zfs:
             if verbose:
                 print("Detecting ZFS snapshot roots...")
@@ -324,6 +326,38 @@ def main() -> None:
                         print(f"- {p}")
                 else:
                     print("ZFS snapshot roots: (none found)")
+
+            # Lightweight scan summary so users can tell whether ZFS scanning found anything.
+            now_iso = datetime.now(timezone.utc).isoformat()
+            if snapshot_roots:
+                for root in snapshot_roots:
+                    try:
+                        snapshot_count = len(list_snapshots(root))
+                    except Exception:
+                        snapshot_count = None
+                    zfs_scan_summary.append(
+                        {
+                            'event_timestamp': now_iso,
+                            'snapshot_root': str(root),
+                            'snapshots_detected': snapshot_count,
+                            'scan_mode': args.zfs_scan_mode,
+                            'snapshots_limit': int(args.zfs_snapshots_limit),
+                            'granularity': args.zfs_granularity,
+                            'max_seconds_per_root': args.zfs_max_seconds_per_root,
+                        }
+                    )
+            else:
+                zfs_scan_summary.append(
+                    {
+                        'event_timestamp': now_iso,
+                        'snapshot_root': None,
+                        'snapshots_detected': 0,
+                        'scan_mode': args.zfs_scan_mode,
+                        'snapshots_limit': int(args.zfs_snapshots_limit),
+                        'granularity': args.zfs_granularity,
+                        'max_seconds_per_root': args.zfs_max_seconds_per_root,
+                    }
+                )
 
             # Prompt for sudo up-front (instead of mid-scan) when required.
             # Avoid prompting unnecessarily (e.g. when snapshot roots are already readable).
@@ -436,6 +470,7 @@ def main() -> None:
     all_events_df = build_all_events(
         local_commit_events,
         local_file_events,
+        zfs_rows,
         gh_commit_events,
         gh_pr_events,
         gh_issue_events,
@@ -453,6 +488,33 @@ def main() -> None:
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         if verbose:
             print("Writing workbook...")
+
+        # Always emit the ZFS sheet (even if there are no rows) so it's obvious whether ZFS ran.
+        zfs_df = dataframe_or_empty(zfs_rows)
+        if zfs_df.empty:
+            zfs_df = pd.DataFrame(
+                columns=[
+                    'event_timestamp',
+                    'source',
+                    'repository',
+                    'file',
+                    'snapshot',
+                    'granularity',
+                    'user',
+                    'attributed_user',
+                    'author',
+                    'email',
+                    'commit',
+                    'status',
+                    'copilot_involved',
+                    'invoker_source',
+                    'raw_author',
+                    'raw_email',
+                ]
+            )
+        zfs_df.to_excel(writer, sheet_name='ZFS Snapshot Timestamps', index=False)
+        write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary))
+
         write_sheet(writer, 'All Events', all_events_df)
         # Compatibility: timesheet_from_timestamps prefers User Timeline.
         write_sheet(writer, 'User Timeline', all_events_df)

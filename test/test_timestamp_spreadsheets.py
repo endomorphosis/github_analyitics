@@ -427,6 +427,69 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             self.assertLess(call_order.index("ensure"), call_order.index("sweep"))
             self.assertTrue(any(v.startswith("reexec:") for v in call_order))
 
+    def test_timestamp_suite_includes_zfs_rows_in_all_events(self):
+        from github_analyitics.timestamp_audit import timestamp_suite as suite
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            out = base / "suite_zfs_rows.xlsx"
+
+            allowed = base / "_allowed_users.txt"
+            allowed.write_text("Real User\n", encoding="utf-8")
+
+            def fake_collect_local_git_and_zfs_sweep(**_kwargs):
+                return (
+                    pd.DataFrame(),
+                    [],
+                    [],
+                    [
+                        {
+                            "snapshot": "snap1",
+                            "repository": "owner/repo",
+                            "file": "hello.txt",
+                            "event_timestamp": "2026-01-01T00:00:00Z",
+                            "user": "Real User",
+                            "author": "Real User",
+                            "attributed_user": "Real User",
+                            "status": "WT",
+                            "commit": None,
+                            "granularity": "file",
+                        }
+                    ],
+                )
+
+            with unittest.mock.patch.object(
+                suite,
+                "collect_local_git_and_zfs_sweep",
+                side_effect=fake_collect_local_git_and_zfs_sweep,
+            ):
+                with _argv(
+                    [
+                        "timestamp_suite",
+                        "--output",
+                        str(out),
+                        "--sources",
+                        "zfs",
+                        "--allowed-users-file",
+                        str(allowed),
+                        "--repos-path",
+                        str(base),
+                        "--max-depth",
+                        "1",
+                        "--no-sudo",
+                        "--zfs-snapshot-root",
+                        str(base / "snap"),
+                    ]
+                ):
+                    suite.main()
+
+            sheets = _read_xlsx_sheets(out)
+            self.assertIn("ZFS Snapshot Timestamps", sheets)
+            self.assertIn("All Events", sheets)
+
+            df = pd.read_excel(out, sheet_name="All Events")
+            self.assertTrue((df["source"] == "zfs_snapshot").any())
+
     @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
     def test_copilot_authored_commit_is_attributed_to_coauthor_invoker(self):
         with tempfile.TemporaryDirectory() as td:
