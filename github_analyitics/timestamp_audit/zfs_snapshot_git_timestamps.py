@@ -296,8 +296,47 @@ def _git_latest_commit(repo_root: Path) -> Optional[Dict[str, str]]:
     }
 
 
+def _git_latest_commit_for_path(repo_root: Path, rel_path: str) -> Optional[Dict[str, str]]:
+    """Return latest commit info for a path (file) within a repo.
+
+    Used for accuracy-first attribution in file-granularity ZFS snapshot events.
+    """
+    rel_path = (rel_path or '').strip().lstrip('/')
+    if not rel_path:
+        return None
+    cmd = [
+        'git',
+        '-C',
+        str(repo_root),
+        'log',
+        '-1',
+        '--pretty=format:%H%x1f%an%x1f%ae%x1f%B',
+        '--',
+        rel_path,
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', check=False)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or '').strip()
+    if not out:
+        return None
+    parts = out.split('\x1f')
+    if len(parts) < 4:
+        return None
+    return {
+        'hash': parts[0].strip(),
+        'author_name': parts[1].strip(),
+        'author_email': parts[2].strip(),
+        'message_body': parts[3],
+    }
+
+
 def _attribute_copilot_invoker(
     *,
+    analytics: LocalGitAnalytics,
     author_name: str,
     author_email: str,
     message_body: str,
@@ -321,7 +360,6 @@ def _attribute_copilot_invoker(
 
     # Reuse LocalGitAnalytics resolver logic for consistent attribution.
     # Mapping support is not available in ZFS mode (no invoker mapping file here).
-    analytics = LocalGitAnalytics(str(Path.cwd()))
     attributed_user, invoker_source = analytics.resolve_invoker_details(
         author_name,
         author_email,
@@ -341,6 +379,8 @@ def collect_snapshot_rows(
 ) -> List[Dict[str, str]]:
     rows: List[Dict[str, str]] = []
     repo_id = infer_repository_identifier(repo_root)
+
+    analytics = LocalGitAnalytics(str(repo_root))
 
     if granularity != 'file':
         if granularity == 'repo_index':
@@ -371,6 +411,7 @@ def collect_snapshot_rows(
             author_email = latest.get('author_email') or author_email
             commit_hash = latest.get('hash') or commit_hash
             attributed_user, copilot_involved, invoker_source = _attribute_copilot_invoker(
+                analytics=analytics,
                 author_name=author_name,
                 author_email=author_email,
                 message_body=latest.get('message_body') or '',
@@ -416,21 +457,60 @@ def collect_snapshot_rows(
         except (OSError, FileNotFoundError):
             continue
         mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+
+        rel_path = str(path.relative_to(repo_root)).replace('\\', '/')
+
+        author_name = user
+        author_email = ''
+        attributed_user = user
+        copilot_involved = False
+        invoker_source = 'snapshot'
+        commit_hash = None
+
+        latest_for_path = _git_latest_commit_for_path(repo_root, rel_path)
+        if latest_for_path:
+            author_name = latest_for_path.get('author_name') or author_name
+            author_email = latest_for_path.get('author_email') or author_email
+            commit_hash = latest_for_path.get('hash') or commit_hash
+            attributed_user, copilot_involved, invoker_source = _attribute_copilot_invoker(
+                analytics=analytics,
+                author_name=author_name,
+                author_email=author_email,
+                message_body=latest_for_path.get('message_body') or '',
+            )
+
+        raw_author = None
+        raw_email = None
+        if copilot_involved and attributed_user and (attributed_user.strip().lower() != (author_name or '').strip().lower()):
+            raw_author = author_name
+            raw_email = author_email
+            author_name = attributed_user
+            # Avoid surfacing bot emails when attributing to invoker.
+            author_email = ''
+
         rows.append(
             {
                 "snapshot": snapshot_name,
                 "repository": repo_id,
-                "file": str(path.relative_to(repo_root)).replace("\\", "/"),
+                "file": rel_path,
                 "event_timestamp": mtime.isoformat(),
-                "user": user,
-                "author": user,
-                "attributed_user": user,
+                "user": attributed_user,
+                "author": author_name,
+                "email": author_email,
+                "attributed_user": attributed_user,
+                "copilot_involved": copilot_involved,
+                "invoker_source": invoker_source,
                 "status": "WT",
-                "commit": None,
+                "commit": commit_hash,
                 "source": "zfs_snapshot",
                 "granularity": "file",
             }
         )
+
+        if raw_author is not None:
+            rows[-1]["raw_author"] = raw_author
+        if raw_email is not None:
+            rows[-1]["raw_email"] = raw_email
     return rows
 
 

@@ -572,6 +572,36 @@ class TestTimestampSpreadsheets(unittest.TestCase):
                 "Expected ZFS snapshot repo-level events to attribute Copilot to human invoker",
             )
 
+            # Also verify file-granularity events use per-file git attribution (accuracy-first, slow path).
+            file_rows = collect_zfs_events(
+                snapshot_root=snapshot_root,
+                user="unknown",
+                max_depth=4,
+                excludes=[],
+                scan_relative_to_mountpoint=None,
+                start_date=None,
+                end_date=None,
+                snapshots_limit=0,
+                granularity="file",
+                max_seconds=None,
+            )
+
+            self.assertGreaterEqual(len(file_rows), 1)
+            self.assertTrue(
+                any(
+                    (r.get("source") == "zfs_snapshot")
+                    and (r.get("granularity") == "file")
+                    and (r.get("file") == "hello.txt")
+                    and (r.get("author") == "Real User")
+                    and (r.get("raw_author") == "GitHub Copilot")
+                    and (r.get("attributed_user") == "Real User")
+                    and (r.get("copilot_involved") is True)
+                    and (r.get("invoker_source") == "co-author")
+                    for r in file_rows
+                ),
+                "Expected ZFS snapshot file-level events to attribute Copilot to human invoker",
+            )
+
     def test_github_analytics_report_can_be_written_from_mocked_data(self):
         from github_analyitics.reporting.github_analytics import GitHubAnalytics
 

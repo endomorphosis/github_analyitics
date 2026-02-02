@@ -575,8 +575,8 @@ def main() -> None:
     parser.add_argument(
         "--zfs-granularity",
         choices=['repo_index', 'repo_root', 'file'],
-        default='repo_index',
-        help="ZFS event granularity (default: repo_index)",
+        default='file',
+        help="ZFS event granularity (default: file)",
     )
 
     parser.add_argument(
