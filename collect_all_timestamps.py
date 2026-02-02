@@ -659,7 +659,17 @@ def main() -> None:
             if limit > 0:
                 snapshot_roots = snapshot_roots[: max(limit, 1)]
 
-    default_user = args.user or detect_github_username() or os.getenv('USER') or 'Unknown'
+    # If we run under sudo, prefer the original invoking user.
+    default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
+
+    # Prompt for sudo once up-front if ZFS snapshot roots are detected.
+    if snapshot_roots and allow_sudo and os.geteuid() != 0:
+        ensure_sudo_credentials()
+        for root in snapshot_roots:
+            try:
+                probe_snapshot_access(root)
+            except PermissionError:
+                maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=True)
 
     allowed_users_path = None
     if args.allowed_users_file:

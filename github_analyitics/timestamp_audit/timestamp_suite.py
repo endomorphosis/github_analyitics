@@ -36,7 +36,10 @@ from github_analyitics.timestamp_audit.collect_all_timestamps import (
     detect_max_depth,
     detect_zfs_snapshot_roots,
     guess_repos_base_path,
+    probe_snapshot_access,
     rank_snapshot_roots,
+    ensure_sudo_credentials,
+    maybe_reexec_with_sudo,
 )
 from github_analyitics.reporting.github_analytics import GitHubAnalytics
 from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
@@ -285,7 +288,8 @@ def main() -> None:
     if verbose:
         print(f"Output: {output_path}")
 
-    default_user = args.user or detect_github_username() or os.getenv('USER') or 'Unknown'
+    # If we run under sudo, prefer the original invoking user.
+    default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
 
     # --- Local / ZFS sweep ---
     local_summary_df = pd.DataFrame()
@@ -323,6 +327,18 @@ def main() -> None:
                         print(f"- {p}")
                 else:
                     print("ZFS snapshot roots: (none found)")
+
+            # Prompt for sudo up-front (instead of mid-scan) so ZFS traversal can be exhaustive.
+            if snapshot_roots and allow_sudo and os.geteuid() != 0:
+                ensure_sudo_credentials()
+                for root in snapshot_roots:
+                    try:
+                        probe_snapshot_access(root)
+                    except PermissionError:
+                        maybe_reexec_with_sudo(
+                            f"traverse ZFS snapshots under {root}",
+                            enabled=True,
+                        )
 
         zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
 

@@ -36,7 +36,10 @@ from collect_all_timestamps import (
     detect_max_depth,
     detect_zfs_snapshot_roots,
     guess_repos_base_path,
+    probe_snapshot_access,
     rank_snapshot_roots,
+    ensure_sudo_credentials,
+    maybe_reexec_with_sudo,
 )
 from github_analytics import GitHubAnalytics
 from local_git_analytics import LocalGitAnalytics
@@ -122,7 +125,8 @@ def write_sheet(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame) -> No
         return
     # Excel sheet name limit is 31 chars.
     sheet = sheet_name[:31]
-    df.to_excel(writer, sheet_name=sheet, index=False)
+    # If we run under sudo, prefer the original invoking user.
+    default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
 
 
 def build_all_events(*event_lists: Sequence[Dict]) -> pd.DataFrame:
@@ -321,6 +325,18 @@ def main() -> None:
                         print(f"- {p}")
                 else:
                     print("ZFS snapshot roots: (none found)")
+
+            # Prompt for sudo up-front (instead of mid-scan) so ZFS traversal can be exhaustive.
+            if snapshot_roots and allow_sudo and os.geteuid() != 0:
+                ensure_sudo_credentials()
+                for root in snapshot_roots:
+                    try:
+                        probe_snapshot_access(root)
+                    except PermissionError:
+                        maybe_reexec_with_sudo(
+                            f"traverse ZFS snapshots under {root}",
+                            enabled=True,
+                        )
 
         zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
 

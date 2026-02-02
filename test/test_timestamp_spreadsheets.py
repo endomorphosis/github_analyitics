@@ -342,6 +342,82 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             self.assertTrue((df["source"] == "local_git").any())
             _assert_timestamp_column_parseable(self, df, "event_timestamp")
 
+    def test_timestamp_suite_zfs_prompts_for_sudo_preflight(self):
+        from github_analyitics.timestamp_audit import timestamp_suite as suite
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            out = base / "suite_zfs_preflight.xlsx"
+
+            allowed = base / "_allowed_users.txt"
+            allowed.write_text("Unknown\n", encoding="utf-8")
+
+            call_order: list[str] = []
+
+            def fake_ensure_sudo_credentials() -> bool:
+                call_order.append("ensure")
+                return True
+
+            def fake_probe_snapshot_access(_root: Path) -> None:
+                call_order.append("probe")
+                return None
+
+            def fake_collect_local_git_and_zfs_sweep(**_kwargs):
+                call_order.append("sweep")
+                # Return a minimal event so the workbook always has at least one sheet.
+                return (
+                    pd.DataFrame(),
+                    [],
+                    [
+                        {
+                            "event_timestamp": "2026-01-01T00:00:00Z",
+                            "author": "Unknown",
+                            "user": "Unknown",
+                            "attributed_user": "Unknown",
+                            "event_type": "test",
+                        }
+                    ],
+                    [],
+                )
+
+            with unittest.mock.patch.object(suite.os, "geteuid", return_value=1000), unittest.mock.patch.object(
+                suite,
+                "detect_zfs_snapshot_roots",
+                return_value=[base / "pool" / ".zfs" / "snapshot"],
+            ), unittest.mock.patch.object(
+                suite,
+                "ensure_sudo_credentials",
+                side_effect=fake_ensure_sudo_credentials,
+            ), unittest.mock.patch.object(
+                suite,
+                "probe_snapshot_access",
+                side_effect=fake_probe_snapshot_access,
+            ), unittest.mock.patch.object(
+                suite,
+                "collect_local_git_and_zfs_sweep",
+                side_effect=fake_collect_local_git_and_zfs_sweep,
+            ):
+                with _argv(
+                    [
+                        "timestamp_suite",
+                        "--output",
+                        str(out),
+                        "--sources",
+                        "zfs",
+                        "--repos-path",
+                        str(base),
+                        "--max-depth",
+                        "1",
+                        "--allowed-users-file",
+                        str(allowed),
+                    ]
+                ):
+                    suite.main()
+
+            self.assertIn("ensure", call_order)
+            self.assertIn("sweep", call_order)
+            self.assertLess(call_order.index("ensure"), call_order.index("sweep"))
+
     @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
     def test_copilot_authored_commit_is_attributed_to_coauthor_invoker(self):
         with tempfile.TemporaryDirectory() as td:
