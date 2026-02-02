@@ -35,13 +35,16 @@ Basic usage (analyze all repositories):
 python github_analytics.py
 ```
 
-python -m github_analyitics.reporting.github_analytics --include-pr-comments
+Unified timestamp suite (recommended; GitHub + local + ZFS into one workbook):
 
 ```bash
-python timestamp_suite.py
+python -m github_analyitics.timestamp_audit.timestamp_suite --allowed-users-file _allowed_users.txt
 ```
 
-python -m github_analyitics.reporting.github_analytics \
+ZFS scanning defaults:
+
+- By default, when ZFS is enabled, the suite scans all auto-detected `.zfs/snapshot` roots (exhaustive).
+- To restrict to a single root for a deterministic run, use `--zfs-snapshot-root <path> --zfs-snapshot-root-only`.
 
 ## Advanced Usage
 

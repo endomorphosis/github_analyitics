@@ -54,6 +54,8 @@ python -m github_analyitics.timestamp_audit.timestamp_suite
 
 This writes a workbook to `data_reports/<timestamp>/github_analytics_timestamps_suite.xlsx` by default.
 
+ZFS note: when ZFS is enabled (default), the suite auto-detects and scans all visible `.zfs/snapshot` roots by default. If you want to restrict ZFS scanning to a single root for a deterministic run, pass `--zfs-snapshot-root <path> --zfs-snapshot-root-only`.
+
 With a date range:
 
 ```bash
