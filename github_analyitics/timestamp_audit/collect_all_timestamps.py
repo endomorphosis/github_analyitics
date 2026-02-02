@@ -592,7 +592,16 @@ def main() -> None:
         default=None,
         help="Optional time budget per ZFS snapshot root (seconds).",
     )
-    parser.add_argument("--output", required=True, help="Output Excel file")
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output Excel file (default: data_reports/<timestamp>/local_git_timestamps.xlsx)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        default="data_reports",
+        help="Base directory for timestamped outputs when --output is not provided (default: data_reports)",
+    )
     parser.add_argument("--start-date", default=None, help="Start date (YYYY-MM-DD) for git history")
     parser.add_argument("--end-date", default=None, help="End date (YYYY-MM-DD) for git history")
     parser.add_argument("--max-depth", type=int, default=None, help="Max directory depth to search (default: auto)")
@@ -623,7 +632,15 @@ def main() -> None:
         args.zfs_snapshots_limit = 0
         args.zfs_scan_mode = 'full'
 
-    output_path = Path(args.output).expanduser().resolve()
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+    else:
+        from github_analyitics.reporting.report_paths import default_xlsx_path
+
+        output_path = default_xlsx_path(
+            "local_git_timestamps.xlsx",
+            base_dir=args.output_dir,
+        )
     repos_path = guess_repos_base_path(args.repos_path)
     max_depth = detect_max_depth(repos_path, args.max_depth)
     snapshot_roots = detect_zfs_snapshot_roots(args.zfs_snapshot_root)

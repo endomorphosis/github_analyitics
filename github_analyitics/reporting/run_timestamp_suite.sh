@@ -34,17 +34,15 @@ if ! "$PY" -c "import pandas" 2>/dev/null; then
     "$PY" -m pip install -r requirements.txt
 fi
 
-OUT="github_analytics_timestamps_suite.xlsx"
-
 if [ $# -eq 0 ]; then
     echo "Running unified timestamp suite (all time)..."
-    "$PY" -m github_analyitics.timestamp_audit.timestamp_suite --output "$OUT" --sources github,local
+    "$PY" -m github_analyitics.timestamp_audit.timestamp_suite
 elif [ $# -eq 2 ]; then
     echo "Running unified timestamp suite from $1 to $2..."
-    "$PY" -m github_analyitics.timestamp_audit.timestamp_suite --output "$OUT" --sources github,local --start-date "$1" --end-date "$2"
+    "$PY" -m github_analyitics.timestamp_audit.timestamp_suite --start-date "$1" --end-date "$2"
 else
     echo "Usage: $0 [start-date end-date]"
     exit 1
 fi
 
-echo "Saved: $OUT"
+echo "Saved under: data_reports/<timestamp>/"
