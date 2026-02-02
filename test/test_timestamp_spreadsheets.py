@@ -369,20 +369,22 @@ class TestTimestampSpreadsheets(unittest.TestCase):
 
             self.assertTrue(
                 any(
-                    (ev.get("author") == "GitHub Copilot")
+                    (ev.get("author") == "Real User")
                     and (ev.get("attributed_user") == "Real User")
                     and (ev.get("copilot_involved") is True)
                     and (ev.get("invoker_source") == "co-author")
+                    and (ev.get("raw_author") == "GitHub Copilot")
                     for ev in commit_events
                 ),
                 "Expected Copilot-authored commit to be attributed to co-author invoker",
             )
             self.assertTrue(
                 any(
-                    (ev.get("author") == "GitHub Copilot")
+                    (ev.get("author") == "Real User")
                     and (ev.get("attributed_user") == "Real User")
                     and (ev.get("copilot_involved") is True)
                     and (ev.get("invoker_source") == "co-author")
+                    and (ev.get("raw_author") == "GitHub Copilot")
                     for ev in file_events
                 ),
                 "Expected Copilot-authored file event to be attributed to co-author invoker",
@@ -413,10 +415,11 @@ class TestTimestampSpreadsheets(unittest.TestCase):
 
             self.assertTrue(
                 any(
-                    (ev.get("author") == "GitHub Copilot")
+                    (ev.get("author") == "Real User")
                     and (ev.get("attributed_user") == "Real User")
                     and (ev.get("copilot_involved") is True)
                     and (ev.get("invoker_source") == "mapping")
+                    and (ev.get("raw_author") == "GitHub Copilot")
                     for ev in commit_events
                 ),
                 "Expected Copilot-authored commit to be attributed via mapping",
@@ -448,13 +451,125 @@ class TestTimestampSpreadsheets(unittest.TestCase):
 
             self.assertTrue(
                 any(
-                    (ev.get("author") == "github-actions[bot]")
+                    (ev.get("author") == "Real User")
                     and (ev.get("attributed_user") == "Real User")
                     and (ev.get("copilot_involved") is True)
                     and (ev.get("invoker_source") == "co-author")
+                    and (ev.get("raw_author") == "github-actions[bot]")
                     for ev in commit_events
                 ),
                 "Expected bot-authored Copilot commit to be attributed to human co-author",
+            )
+
+    @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
+    def test_timestamp_suite_all_events_preserves_copilot_invoker_attribution(self):
+        from github_analyitics.timestamp_audit import timestamp_suite as suite
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 9, 12, 0, 0))
+
+            _git_commit_with_message(
+                repo,
+                filename="hello.txt",
+                content="suite copilot\n",
+                author_name="GitHub Copilot",
+                author_email="copilot@github.com",
+                commit_dt=datetime(2026, 1, 9, 12, 5, 0),
+                message=(
+                    "suite copilot change\n\n"
+                    "Co-authored-by: Real User <real@example.com>\n"
+                ),
+            )
+
+            allowed = base / "_allowed_users.txt"
+            allowed.write_text("Real User\nreal@example.com\n", encoding="utf-8")
+
+            out = base / "suite.xlsx"
+            with _argv(
+                [
+                    "timestamp_suite",
+                    "--output",
+                    str(out),
+                    "--sources",
+                    "local",
+                    "--repos-path",
+                    str(base),
+                    "--max-depth",
+                    "2",
+                    "--allowed-users-file",
+                    str(allowed),
+                ]
+            ):
+                suite.main()
+
+            df = pd.read_excel(out, sheet_name="All Events")
+            self.assertIn("attributed_user", df.columns)
+            self.assertIn("author", df.columns)
+            self.assertIn("copilot_involved", df.columns)
+            self.assertIn("invoker_source", df.columns)
+            self.assertIn("raw_author", df.columns)
+            self.assertTrue(
+                ((df["author"] == "Real User")
+                 & (df["raw_author"] == "GitHub Copilot")
+                 & (df["attributed_user"] == "Real User")
+                 & (df["copilot_involved"] == True)
+                 & (df["invoker_source"] == "co-author")).any()
+            )
+
+    @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
+    def test_zfs_snapshot_repo_events_attribute_copilot_to_invoker(self):
+        from github_analyitics.timestamp_audit.collect_all_timestamps import collect_zfs_events
+
+        with tempfile.TemporaryDirectory() as td:
+            base = Path(td)
+            repo = _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 10, 12, 0, 0))
+
+            _git_commit_with_message(
+                repo,
+                filename="hello.txt",
+                content="zfs copilot\n",
+                author_name="GitHub Copilot",
+                author_email="copilot@github.com",
+                commit_dt=datetime(2026, 1, 10, 12, 5, 0),
+                message=(
+                    "zfs copilot change\n\n"
+                    "Co-authored-by: Real User <real@example.com>\n"
+                ),
+            )
+
+            snapshot_root = base / "pool" / ".zfs" / "snapshot"
+            snap = snapshot_root / "2026-01-10T12-10-00Z"
+            snap.mkdir(parents=True, exist_ok=True)
+
+            # Copy repo into a fake snapshot directory.
+            shutil.copytree(repo, snap / "repo1", dirs_exist_ok=True)
+
+            rows = collect_zfs_events(
+                snapshot_root=snapshot_root,
+                user="unknown",
+                max_depth=4,
+                excludes=[],
+                scan_relative_to_mountpoint=None,
+                start_date=None,
+                end_date=None,
+                snapshots_limit=0,
+                granularity="repo_index",
+                max_seconds=None,
+            )
+
+            self.assertGreaterEqual(len(rows), 1)
+            self.assertTrue(
+                any(
+                    (r.get("source") == "zfs_snapshot")
+                    and (r.get("author") == "Real User")
+                    and (r.get("raw_author") == "GitHub Copilot")
+                    and (r.get("attributed_user") == "Real User")
+                    and (r.get("copilot_involved") is True)
+                    and (r.get("invoker_source") == "co-author")
+                    for r in rows
+                ),
+                "Expected ZFS snapshot repo-level events to attribute Copilot to human invoker",
             )
 
     def test_github_analytics_report_can_be_written_from_mocked_data(self):

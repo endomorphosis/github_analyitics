@@ -731,18 +731,34 @@ class LocalGitAnalytics:
             data[attributed_user][date_key]['commit_times'].append({'date': commit['date']})
 
             if self.commit_events is not None:
-                self.commit_events.append({
+                event_author = author
+                event_email = email
+                raw_author = None
+                raw_email = None
+                if copilot_involved and attributed_user and self.normalize_identity(attributed_user) != self.normalize_identity(author):
+                    raw_author = author
+                    raw_email = email
+                    event_author = attributed_user
+                    # We usually do not know the invoker's email; avoid leaking bot emails.
+                    event_email = ''
+
+                row = {
                     'repository': repo_path.name,
-                    'author': author,
+                    'author': event_author,
                     'attributed_user': attributed_user,
                     'user': attributed_user,
                     'copilot_involved': copilot_involved,
                     'invoker_source': invoker_source,
-                    'email': email,
+                    'email': event_email,
                     'event_timestamp': commit['date'].isoformat(),
                     'commit': commit['hash'],
-                    'subject': commit['subject']
-                })
+                    'subject': commit['subject'],
+                }
+                if raw_author:
+                    row['raw_author'] = raw_author
+                if raw_email:
+                    row['raw_email'] = raw_email
+                self.commit_events.append(row)
         
         # Track file modifications
         for mod in modifications:
@@ -767,19 +783,34 @@ class LocalGitAnalytics:
             data[attributed_user][date_key]['files_modified'].add(mod['file'])
 
             if self.file_events is not None:
-                self.file_events.append({
+                event_author = author
+                event_email = email
+                raw_author = None
+                raw_email = None
+                if copilot_involved and attributed_user and self.normalize_identity(attributed_user) != self.normalize_identity(author):
+                    raw_author = author
+                    raw_email = email
+                    event_author = attributed_user
+                    event_email = ''
+
+                row = {
                     'repository': repo_path.name,
-                    'author': author,
+                    'author': event_author,
                     'attributed_user': attributed_user,
                     'user': attributed_user,
                     'copilot_involved': copilot_involved,
                     'invoker_source': invoker_source,
-                    'email': email,
+                    'email': event_email,
                     'event_timestamp': mod['date'].isoformat(),
                     'status': mod['status'],
                     'file': mod['file'],
-                    'commit': mod['commit']
-                })
+                    'commit': mod['commit'],
+                }
+                if raw_author:
+                    row['raw_author'] = raw_author
+                if raw_email:
+                    row['raw_email'] = raw_email
+                self.file_events.append(row)
         
         # Convert sets to counts and calculate session-based hours if requested
         for author in data:

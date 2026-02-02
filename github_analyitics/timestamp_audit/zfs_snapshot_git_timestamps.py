@@ -15,9 +15,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 import configparser
 import re
-from typing import Dict, Iterable, List, Literal, Optional
+from typing import Dict, Iterable, List, Literal, Optional, Tuple
 
 import pandas as pd
+
+from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
 
 
 DEFAULT_EXCLUDES = {
@@ -261,6 +263,75 @@ def iter_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
 ZfsGranularity = Literal['file', 'repo_index', 'repo_root']
 
 
+def _git_latest_commit(repo_root: Path) -> Optional[Dict[str, str]]:
+    """Return latest commit info for a repo.
+
+    This is used to improve attribution for repo-level ZFS snapshot events.
+    """
+    cmd = [
+        'git',
+        '-C',
+        str(repo_root),
+        'log',
+        '-1',
+        '--pretty=format:%H%x1f%an%x1f%ae%x1f%B',
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', check=False)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    out = (proc.stdout or '').strip()
+    if not out:
+        return None
+    parts = out.split('\x1f')
+    if len(parts) < 4:
+        return None
+    return {
+        'hash': parts[0].strip(),
+        'author_name': parts[1].strip(),
+        'author_email': parts[2].strip(),
+        'message_body': parts[3],
+    }
+
+
+def _attribute_copilot_invoker(
+    *,
+    author_name: str,
+    author_email: str,
+    message_body: str,
+) -> Tuple[str, bool, str]:
+    """Return (attributed_user, copilot_involved, invoker_source)."""
+
+    co_authors = LocalGitAnalytics.parse_co_authors(message_body)
+    copilot_involved = LocalGitAnalytics.is_copilot_identity(author_name, author_email)
+    copilot_identity = author_email or author_name
+    invoker_override = None
+
+    for name, email in co_authors:
+        if LocalGitAnalytics.is_copilot_identity(name, email):
+            copilot_involved = True
+            copilot_identity = email or name
+        elif not invoker_override:
+            invoker_override = name
+
+    if LocalGitAnalytics.has_copilot_trailer(message_body):
+        copilot_involved = True
+
+    # Reuse LocalGitAnalytics resolver logic for consistent attribution.
+    # Mapping support is not available in ZFS mode (no invoker mapping file here).
+    analytics = LocalGitAnalytics(str(Path.cwd()))
+    attributed_user, invoker_source = analytics.resolve_invoker_details(
+        author_name,
+        author_email,
+        copilot_involved,
+        invoker_override,
+        copilot_identity,
+    )
+    return attributed_user, bool(copilot_involved), invoker_source
+
+
 def collect_snapshot_rows(
     snapshot_name: str,
     repo_root: Path,
@@ -285,21 +356,58 @@ def collect_snapshot_rows(
             return rows
 
         mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+
+        # Prefer attribution based on latest commit in this snapshot's repo.
+        author_name = user
+        author_email = ''
+        attributed_user = user
+        copilot_involved = False
+        invoker_source = 'snapshot'
+        commit_hash = None
+
+        latest = _git_latest_commit(repo_root)
+        if latest:
+            author_name = latest.get('author_name') or author_name
+            author_email = latest.get('author_email') or author_email
+            commit_hash = latest.get('hash') or commit_hash
+            attributed_user, copilot_involved, invoker_source = _attribute_copilot_invoker(
+                author_name=author_name,
+                author_email=author_email,
+                message_body=latest.get('message_body') or '',
+            )
+
+        raw_author = None
+        raw_email = None
+        if copilot_involved and attributed_user and (attributed_user.strip().lower() != (author_name or '').strip().lower()):
+            raw_author = author_name
+            raw_email = author_email
+            author_name = attributed_user
+            # Avoid surfacing bot emails when attributing to invoker.
+            author_email = ''
+
         rows.append(
             {
                 "snapshot": snapshot_name,
                 "repository": repo_id,
                 "file": "",
                 "event_timestamp": mtime.isoformat(),
-                "user": user,
-                "author": user,
-                "attributed_user": user,
+                "user": attributed_user,
+                "author": author_name,
+                "email": author_email,
+                "attributed_user": attributed_user,
+                "copilot_involved": copilot_involved,
+                "invoker_source": invoker_source,
                 "status": "WT",
-                "commit": None,
+                "commit": commit_hash,
                 "source": "zfs_snapshot",
                 "granularity": granularity,
             }
         )
+
+        if raw_author is not None:
+            rows[-1]["raw_author"] = raw_author
+        if raw_email is not None:
+            rows[-1]["raw_email"] = raw_email
         return rows
 
     for path in iter_files(repo_root, excludes):
