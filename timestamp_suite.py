@@ -325,17 +325,27 @@ def main() -> None:
                 else:
                     print("ZFS snapshot roots: (none found)")
 
-            # Prompt for sudo up-front (instead of mid-scan) so ZFS traversal can be exhaustive.
+            # Prompt for sudo up-front (instead of mid-scan) when required.
+            # Avoid prompting unnecessarily (e.g. when snapshot roots are already readable).
             if snapshot_roots and allow_sudo and os.geteuid() != 0:
-                ensure_sudo_credentials()
+                need_sudo = False
                 for root in snapshot_roots:
                     try:
                         probe_snapshot_access(root)
                     except PermissionError:
-                        maybe_reexec_with_sudo(
-                            f"traverse ZFS snapshots under {root}",
-                            enabled=True,
-                        )
+                        need_sudo = True
+                        break
+
+                if need_sudo:
+                    ensure_sudo_credentials()
+                    for root in snapshot_roots:
+                        try:
+                            probe_snapshot_access(root)
+                        except PermissionError:
+                            maybe_reexec_with_sudo(
+                                f"traverse ZFS snapshots under {root}",
+                                enabled=True,
+                            )
 
         zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
 

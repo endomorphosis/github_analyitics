@@ -661,14 +661,24 @@ def main() -> None:
     # If we run under sudo, prefer the original invoking user.
     default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
 
-    # Prompt for sudo once up-front if ZFS snapshot roots are detected.
+    # Prompt for sudo once up-front when required.
+    # Avoid prompting unnecessarily (e.g. when snapshot roots are already readable).
     if snapshot_roots and allow_sudo and os.geteuid() != 0:
-        ensure_sudo_credentials()
+        need_sudo = False
         for root in snapshot_roots:
             try:
                 probe_snapshot_access(root)
             except PermissionError:
-                maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=True)
+                need_sudo = True
+                break
+
+        if need_sudo:
+            ensure_sudo_credentials()
+            for root in snapshot_roots:
+                try:
+                    probe_snapshot_access(root)
+                except PermissionError:
+                    maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=True)
 
     # Enforce allowed-users filtering for spreadsheet outputs.
     allowed_users_path = None

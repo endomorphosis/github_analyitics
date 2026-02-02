@@ -342,7 +342,7 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             self.assertTrue((df["source"] == "local_git").any())
             _assert_timestamp_column_parseable(self, df, "event_timestamp")
 
-    def test_timestamp_suite_zfs_prompts_for_sudo_preflight(self):
+    def test_timestamp_suite_zfs_sudo_preflight_runs_when_required(self):
         from github_analyitics.timestamp_audit import timestamp_suite as suite
 
         with tempfile.TemporaryDirectory() as td:
@@ -360,6 +360,10 @@ class TestTimestampSpreadsheets(unittest.TestCase):
 
             def fake_probe_snapshot_access(_root: Path) -> None:
                 call_order.append("probe")
+                raise PermissionError("denied")
+
+            def fake_maybe_reexec_with_sudo(_reason: str, enabled: bool) -> None:
+                call_order.append(f"reexec:{enabled}")
                 return None
 
             def fake_collect_local_git_and_zfs_sweep(**_kwargs):
@@ -394,6 +398,10 @@ class TestTimestampSpreadsheets(unittest.TestCase):
                 side_effect=fake_probe_snapshot_access,
             ), unittest.mock.patch.object(
                 suite,
+                "maybe_reexec_with_sudo",
+                side_effect=fake_maybe_reexec_with_sudo,
+            ), unittest.mock.patch.object(
+                suite,
                 "collect_local_git_and_zfs_sweep",
                 side_effect=fake_collect_local_git_and_zfs_sweep,
             ):
@@ -417,6 +425,7 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             self.assertIn("ensure", call_order)
             self.assertIn("sweep", call_order)
             self.assertLess(call_order.index("ensure"), call_order.index("sweep"))
+            self.assertTrue(any(v.startswith("reexec:") for v in call_order))
 
     @unittest.skipUnless(_require_git(), "git is required for integration timestamp tests")
     def test_copilot_authored_commit_is_attributed_to_coauthor_invoker(self):
