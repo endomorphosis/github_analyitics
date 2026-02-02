@@ -187,8 +187,18 @@ def main() -> None:
     # GitHub options
     parser.add_argument('--github-token', default=None, help='(Deprecated) GitHub token (not required when using gh auth)')
     parser.add_argument('--github-username', default=None, help='GitHub username (default: env GITHUB_USERNAME)')
-    parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications')
-    parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup')
+    parser.add_argument('--skip-file-modifications', action='store_true', help='GitHub: skip file modifications (deprecated: this is now the default)')
+    parser.add_argument('--skip-commit-stats', action='store_true', help='GitHub: skip commit stats lookup (deprecated: this is now the default)')
+    parser.add_argument(
+        '--include-file-modifications',
+        action='store_true',
+        help='GitHub: include file modification lists (slower; may hit API rate limits)',
+    )
+    parser.add_argument(
+        '--include-commit-stats',
+        action='store_true',
+        help='GitHub: include per-commit stats (slower; may hit API rate limits)',
+    )
     parser.add_argument('--disable-rate-limiting', action='store_true', help='GitHub: disable rate limiting')
     parser.add_argument('--include-pr-comments', action='store_true', help='GitHub: include PR comments + review comments')
     parser.add_argument('--skip-pr-review-comments', action='store_true', help='GitHub: do not include inline review comments')
@@ -231,6 +241,11 @@ def main() -> None:
     want_github = 'github' in sources
     want_local = 'local' in sources
     want_zfs = 'zfs' in sources
+
+    # Safe defaults: timestamp suite is primarily about timestamps, not per-commit stats.
+    # Opt-in for expensive API calls via --include-*.
+    skip_commit_stats = bool(args.skip_commit_stats) or (not bool(getattr(args, 'include_commit_stats', False)))
+    skip_file_modifications = bool(args.skip_file_modifications) or (not bool(getattr(args, 'include_file_modifications', False)))
 
     if verbose:
         print(f"Sources enabled: {', '.join(sorted(sources))}")
@@ -329,9 +344,9 @@ def main() -> None:
 
         if verbose:
             print(f"GitHub username: {username}")
-            if args.skip_commit_stats:
+            if skip_commit_stats:
                 print("GitHub: skipping per-commit stats")
-            if args.skip_file_modifications:
+            if skip_file_modifications:
                 print("GitHub: skipping file modification lists")
 
         gh = GitHubAnalytics("", username, enable_rate_limiting=not args.disable_rate_limiting)
@@ -341,8 +356,8 @@ def main() -> None:
             include_repos=None,
             exclude_repos=None,
             filter_by_user_contribution=None,
-            skip_file_modifications=args.skip_file_modifications,
-            skip_commit_stats=args.skip_commit_stats,
+            skip_file_modifications=skip_file_modifications,
+            skip_commit_stats=skip_commit_stats,
             restrict_to_collaborators=True,
             restrict_to_owner_namespace=True,
             fast_mode=False,
