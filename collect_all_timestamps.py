@@ -65,7 +65,7 @@ def collect_local_git_and_zfs_sweep(
             except PermissionError:
                 maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=allow_sudo)
 
-    analytics = LocalGitAnalytics(str(repos_path))
+    analytics = LocalGitAnalytics(str(repos_path), allowed_users=allowed_users)
     summary_df = analytics.analyze_all_repositories(
         start_date=start_date,
         end_date=end_date,

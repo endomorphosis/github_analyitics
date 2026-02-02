@@ -416,6 +416,15 @@ def main() -> None:
         gh_issue_events,
     )
 
+    # Safety net: ensure output contains only allowlisted identities.
+    if allowed_users:
+        allowed_lower = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
+        for col in ("user", "author", "attributed_user"):
+            if col in all_events_df.columns:
+                s = all_events_df[col]
+                mask = s.isna() | (s.astype(str).str.strip() == "") | s.astype(str).str.strip().str.lower().isin(allowed_lower)
+                all_events_df = all_events_df[mask]
+
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         if verbose:
             print("Writing workbook...")

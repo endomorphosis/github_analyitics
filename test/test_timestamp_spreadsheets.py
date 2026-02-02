@@ -238,6 +238,9 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 4, 12, 0, 0))
             out = base / "collect_all.xlsx"
 
+            allowed = base / "_allowed_users.txt"
+            allowed.write_text("Test User\ntest@example.com\n", encoding="utf-8")
+
             # Force-disable ZFS auto-detection during test for determinism
             env = os.environ.copy()
             env["ZFS_SNAPSHOT_ROOT"] = str(base / "__nope__")
@@ -252,6 +255,8 @@ class TestTimestampSpreadsheets(unittest.TestCase):
                         str(out),
                         "--max-depth",
                         "2",
+                        "--allowed-users-file",
+                        str(allowed),
                         "--zfs-snapshot-root",
                         str(base / "__nope__"),
                     ]
@@ -277,6 +282,9 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             _create_git_repo(base, "repo1", commit_dt=datetime(2026, 1, 5, 12, 0, 0))
             out = base / "suite.xlsx"
 
+            allowed = base / "_allowed_users.txt"
+            allowed.write_text("Test User\ntest@example.com\n", encoding="utf-8")
+
             with _argv(
                 [
                     "timestamp_suite",
@@ -288,6 +296,8 @@ class TestTimestampSpreadsheets(unittest.TestCase):
                     str(base),
                     "--max-depth",
                     "2",
+                    "--allowed-users-file",
+                    str(allowed),
                 ]
             ):
                 suite.main()
