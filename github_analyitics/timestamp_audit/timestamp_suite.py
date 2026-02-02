@@ -38,6 +38,7 @@ from github_analyitics.timestamp_audit.collect_all_timestamps import (
     guess_repos_base_path,
     probe_snapshot_access,
     rank_snapshot_roots,
+    snapshot_root_mountpoint,
     ensure_sudo_credentials,
     maybe_reexec_with_sudo,
 )
@@ -45,6 +46,8 @@ from github_analyitics.reporting.github_analytics import GitHubAnalytics
 from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
 from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
     DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
+    find_git_roots,
+    is_git_repo_dir,
     list_snapshots,
 )
 
@@ -359,14 +362,51 @@ def main() -> None:
             if snapshot_roots:
                 for root in snapshot_roots:
                     try:
-                        snapshot_count = len(list_snapshots(root))
+                        snapshots = list_snapshots(root)
+                        snapshot_count = len(snapshots)
                     except Exception:
+                        snapshots = []
                         snapshot_count = None
+
+                    example_snapshot = None
+                    repos_found: Optional[int] = 0 if snapshot_count == 0 else None
+                    try:
+                        if snapshots:
+                            # Prefer newest snapshot names when possible.
+                            try:
+                                snapshots_sorted = sorted(snapshots, key=lambda p: p.name, reverse=True)
+                            except Exception:
+                                snapshots_sorted = snapshots
+                            snap = snapshots_sorted[0]
+                            example_snapshot = snap.name
+
+                            scan_base = snap
+                            if args.zfs_scan_mode == 'match-repos-path':
+                                mountpoint = snapshot_root_mountpoint(root)
+                                rel = None
+                                if mountpoint is not None:
+                                    try:
+                                        rel = repos_path.relative_to(mountpoint)
+                                    except Exception:
+                                        rel = None
+                                if rel is not None:
+                                    candidate = snap / rel
+                                    if candidate.exists():
+                                        scan_base = candidate
+
+                            if is_git_repo_dir(scan_base):
+                                repos_found = 1
+                            else:
+                                repos_found = len(find_git_roots(scan_base, max_depth=max_depth))
+                    except Exception:
+                        pass
                     zfs_scan_summary.append(
                         {
                             'event_timestamp': now_iso,
                             'snapshot_root': str(root),
                             'snapshots_detected': snapshot_count,
+                            'example_snapshot': example_snapshot,
+                            'repos_found_in_example_snapshot': repos_found,
                             'scan_mode': args.zfs_scan_mode,
                             'snapshots_limit': int(args.zfs_snapshots_limit),
                             'granularity': args.zfs_granularity,
@@ -379,6 +419,8 @@ def main() -> None:
                         'event_timestamp': now_iso,
                         'snapshot_root': None,
                         'snapshots_detected': 0,
+                        'example_snapshot': None,
+                        'repos_found_in_example_snapshot': 0,
                         'scan_mode': args.zfs_scan_mode,
                         'snapshots_limit': int(args.zfs_snapshots_limit),
                         'granularity': args.zfs_granularity,

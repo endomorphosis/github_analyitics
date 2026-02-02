@@ -34,6 +34,35 @@ DEFAULT_EXCLUDES = {
 }
 
 
+def _is_bare_git_repo_dir(path: Path) -> bool:
+    if not path.is_dir():
+        return False
+    head = path / 'HEAD'
+    objects_dir = path / 'objects'
+    refs_dir = path / 'refs'
+    packed_refs = path / 'packed-refs'
+    config = path / 'config'
+    return (
+        head.is_file()
+        and objects_dir.is_dir()
+        and (refs_dir.is_dir() or packed_refs.is_file())
+        and config.is_file()
+    )
+
+
+def is_git_repo_dir(path: Path) -> bool:
+    """Return True if the path looks like a git working tree or bare repo."""
+    if not path.is_dir():
+        return False
+
+    git_path = path / '.git'
+    if git_path.is_dir() or git_path.is_file():
+        return True
+
+    # Bare repo signature (e.g. repo.git)
+    return _is_bare_git_repo_dir(path)
+
+
 def ensure_sudo_credentials() -> bool:
     if shutil.which('sudo') is None:
         return False
@@ -195,7 +224,7 @@ def find_git_roots(base_path: Path, max_depth: int) -> List[Path]:
         if depth > max_depth:
             return
         try:
-            if (current / ".git").is_dir():
+            if is_git_repo_dir(current):
                 git_roots.append(current)
                 return
 
@@ -210,6 +239,33 @@ def find_git_roots(base_path: Path, max_depth: int) -> List[Path]:
 
     walk(base_path, 0)
     return git_roots
+
+
+def resolve_git_dir(repo_root: Path) -> Optional[Path]:
+    """Return the git directory for a working tree or bare repo.
+
+    - Normal clone: <repo>/.git (directory)
+    - Worktree: <repo>/.git (file containing 'gitdir: <path>')
+    - Bare repo: <repo>/ (contains HEAD, objects, refs, config)
+    """
+    if _is_bare_git_repo_dir(repo_root):
+        return repo_root
+
+    git_path = repo_root / '.git'
+    if git_path.is_dir():
+        return git_path
+    if git_path.is_file():
+        try:
+            first = (git_path.read_text(encoding='utf-8', errors='replace').splitlines() or [''])[0].strip()
+        except Exception:
+            return None
+        if first.lower().startswith('gitdir:'):
+            raw = first.split(':', 1)[1].strip()
+            p = Path(raw)
+            if not p.is_absolute():
+                p = (repo_root / p)
+            return p.resolve() if p.exists() else p
+    return None
 
 
 def parse_repo_full_name_from_remote_url(url: str) -> Optional[str]:
@@ -233,8 +289,9 @@ def infer_repository_identifier(repo_root: Path) -> str:
     Prefers GitHub-style owner/repo derived from origin URL, falling back to
     directory name.
     """
-    config_path = repo_root / ".git" / "config"
-    if config_path.is_file():
+    git_dir = resolve_git_dir(repo_root)
+    config_path = (git_dir / 'config') if git_dir else None
+    if config_path and config_path.is_file():
         try:
             parser = configparser.ConfigParser()
             parser.read(config_path)
