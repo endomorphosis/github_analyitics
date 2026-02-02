@@ -226,7 +226,19 @@ def main() -> None:
     parser.add_argument('--include-working-tree-timestamps', action='store_true', help='Include working tree mtimes')
     parser.add_argument('--working-tree-exclude', action='append', default=[], help='Working tree exclude dir name (repeatable)')
 
-    parser.add_argument('--zfs-snapshot-root', default=None, help='ZFS snapshot root path (default: auto-detect)')
+    parser.add_argument(
+        '--zfs-snapshot-root',
+        default=None,
+        help=(
+            'ZFS snapshot root path to prioritize/include. By default the suite scans all detected snapshot roots; '
+            'use --zfs-snapshot-root-only to restrict scanning to just this root.'
+        ),
+    )
+    parser.add_argument(
+        '--zfs-snapshot-root-only',
+        action='store_true',
+        help='ZFS: scan only the --zfs-snapshot-root (or env override) instead of scanning all detected roots',
+    )
     parser.add_argument('--no-sudo', action='store_true', help='ZFS: do not prompt for sudo / re-exec under sudo')
     parser.add_argument('--all-zfs-snapshot-roots', action='store_true', help='ZFS: scan all detected roots (deprecated; default behavior is now exhaustive)')
     parser.add_argument('--zfs-snapshot-roots-limit', type=int, default=0, help='ZFS: max detected roots to scan (0=all; default: 0)')
@@ -312,12 +324,21 @@ def main() -> None:
         if want_zfs:
             if verbose:
                 print("Detecting ZFS snapshot roots...")
-            snapshot_roots = detect_zfs_snapshot_roots(args.zfs_snapshot_root)
-            if args.zfs_snapshot_root is None and snapshot_roots:
-                snapshot_roots = rank_snapshot_roots(snapshot_roots)
-                limit = 0 if args.all_zfs_snapshot_roots else int(args.zfs_snapshot_roots_limit)
-                if limit > 0:
-                    snapshot_roots = snapshot_roots[: max(limit, 1)]
+            if args.zfs_snapshot_root_only:
+                snapshot_roots = detect_zfs_snapshot_roots(args.zfs_snapshot_root)
+            else:
+                snapshot_roots = detect_zfs_snapshot_roots(None)
+                if args.zfs_snapshot_root:
+                    explicit = detect_zfs_snapshot_roots(args.zfs_snapshot_root)
+                    for r in explicit:
+                        if all(str(r) != str(existing) for existing in snapshot_roots):
+                            snapshot_roots.append(r)
+
+                if snapshot_roots:
+                    snapshot_roots = rank_snapshot_roots(snapshot_roots)
+                    limit = 0 if args.all_zfs_snapshot_roots else int(args.zfs_snapshot_roots_limit)
+                    if limit > 0:
+                        snapshot_roots = snapshot_roots[: max(limit, 1)]
 
             if verbose:
                 if snapshot_roots:

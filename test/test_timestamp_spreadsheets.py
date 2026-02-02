@@ -479,6 +479,7 @@ class TestTimestampSpreadsheets(unittest.TestCase):
                         "--no-sudo",
                         "--zfs-snapshot-root",
                         str(base / "snap"),
+                        "--zfs-snapshot-root-only",
                     ]
                 ):
                     suite.main()
