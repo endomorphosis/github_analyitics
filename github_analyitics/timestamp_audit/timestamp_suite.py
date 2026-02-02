@@ -23,6 +23,8 @@ from __future__ import annotations
 import argparse
 import os
 import time
+import shutil
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -50,6 +52,58 @@ from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
     is_git_repo_dir,
     list_snapshots,
 )
+
+
+def _run(cmd: List[str]) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+        out = (proc.stdout or '').strip()
+        err = (proc.stderr or '').strip()
+        return proc.returncode, out or err
+    except Exception as e:
+        return 1, str(e)
+
+
+def _zfs_dataset_for_mountpoint(mountpoint: Path) -> Optional[str]:
+    if shutil.which('zfs') is None:
+        return None
+    code, out = _run(['zfs', 'list', '-H', '-o', 'name,mountpoint'])
+    if code != 0 or not out:
+        return None
+    mp = str(mountpoint)
+    for line in out.splitlines():
+        parts = (line or '').split('\t')
+        if len(parts) < 2:
+            # Some zfs versions separate by spaces when not using -p; be tolerant.
+            parts = (line or '').split()
+        if len(parts) < 2:
+            continue
+        name = parts[0].strip()
+        mpt = parts[1].strip()
+        if mpt == mp:
+            return name
+    return None
+
+
+def _zfs_get_property(dataset: str, prop: str) -> Optional[str]:
+    if not dataset or shutil.which('zfs') is None:
+        return None
+    code, out = _run(['zfs', 'get', '-H', '-o', 'value', prop, dataset])
+    if code != 0 or not out:
+        return None
+    return out.splitlines()[0].strip()
+
+
+def _zfs_count_snapshots(dataset: str) -> Optional[int]:
+    if not dataset or shutil.which('zfs') is None:
+        return None
+    # Count snapshots in the dataset subtree.
+    code, out = _run(['zfs', 'list', '-H', '-t', 'snapshot', '-o', 'name', '-r', dataset])
+    if code != 0:
+        return None
+    if not out.strip():
+        return 0
+    return len([ln for ln in out.splitlines() if (ln or '').strip()])
 
 
 def _resolve_allowed_users_path(explicit: Optional[str]) -> Optional[Path]:
@@ -370,6 +424,17 @@ def main() -> None:
 
                     example_snapshot = None
                     repos_found: Optional[int] = 0 if snapshot_count == 0 else None
+
+                    mountpoint = snapshot_root_mountpoint(root)
+                    dataset = _zfs_dataset_for_mountpoint(mountpoint) if mountpoint else None
+                    snapdir_value = _zfs_get_property(dataset, 'snapdir') if dataset else None
+                    cli_snapshot_count = _zfs_count_snapshots(dataset) if dataset else None
+                    snapdir_hidden_warning = None
+                    if snapdir_value == 'hidden' and (cli_snapshot_count or 0) > 0:
+                        snapdir_hidden_warning = (
+                            'snapdir=hidden: snapshots may exist (per zfs CLI) but are not visible under .zfs/snapshot '
+                            'for filesystem scanning'
+                        )
                     try:
                         if snapshots:
                             # Prefer newest snapshot names when possible.
@@ -405,6 +470,10 @@ def main() -> None:
                             'event_timestamp': now_iso,
                             'snapshot_root': str(root),
                             'snapshots_detected': snapshot_count,
+                            'zfs_dataset': dataset,
+                            'zfs_snapdir': snapdir_value,
+                            'zfs_cli_snapshots_detected': cli_snapshot_count,
+                            'zfs_warning': snapdir_hidden_warning,
                             'example_snapshot': example_snapshot,
                             'repos_found_in_example_snapshot': repos_found,
                             'scan_mode': args.zfs_scan_mode,
@@ -419,6 +488,10 @@ def main() -> None:
                         'event_timestamp': now_iso,
                         'snapshot_root': None,
                         'snapshots_detected': 0,
+                        'zfs_dataset': None,
+                        'zfs_snapdir': None,
+                        'zfs_cli_snapshots_detected': 0,
+                        'zfs_warning': None,
                         'example_snapshot': None,
                         'repos_found_in_example_snapshot': 0,
                         'scan_mode': args.zfs_scan_mode,
