@@ -46,6 +46,7 @@ from github_analyitics.timestamp_audit.collect_all_timestamps import (
 )
 from github_analyitics.reporting.github_analytics import GitHubAnalytics
 from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
+from github_analyitics.timestamp_audit.duckdb_store import DuckDbStore, write_query_to_excel
 from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
     DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
     find_git_roots,
@@ -294,6 +295,22 @@ def main() -> None:
 
     parser.add_argument('--verbose', action='store_true', help='Verbose progress logging (prints phase timings and gh commands)')
     parser.add_argument(
+        '--use-duckdb',
+        action='store_true',
+        help='Write large event tables to a DuckDB database first, then export to XLSX in chunks (reduces memory and speeds up huge exports)',
+    )
+    parser.add_argument(
+        '--duckdb-path',
+        default=None,
+        help='DuckDB database file path (default: <output>.duckdb when --use-duckdb is set)',
+    )
+    parser.add_argument(
+        '--duckdb-batch-size',
+        type=int,
+        default=50_000,
+        help='Row batch size when appending events to DuckDB (default: 50000)',
+    )
+    parser.add_argument(
         '--local-progress-every-seconds',
         type=float,
         default=60.0,
@@ -344,6 +361,12 @@ def main() -> None:
     # Local/ZFS options
     parser.add_argument('--repos-path', default=None, help='Local repo scan base path (default: auto)')
     parser.add_argument('--max-depth', type=int, default=None, help='Local repo scan max depth (default: auto)')
+    parser.add_argument(
+        '--local-workers',
+        type=int,
+        default=1,
+        help='Local git: number of worker processes for scanning repositories in parallel (default: 1)',
+    )
     parser.add_argument('--user', default=None, help='Default user attribution for non-git-history sources')
 
     parser.add_argument(
@@ -371,9 +394,27 @@ def main() -> None:
     parser.add_argument('--no-sudo', action='store_true', help='ZFS: do not prompt for sudo / re-exec under sudo')
     parser.add_argument('--all-zfs-snapshot-roots', action='store_true', help='ZFS: scan all detected roots (deprecated; default behavior is now exhaustive)')
     parser.add_argument('--zfs-snapshot-roots-limit', type=int, default=0, help='ZFS: max detected roots to scan (0=all; default: 0)')
+    parser.add_argument(
+        '--zfs-root-workers',
+        type=int,
+        default=1,
+        help='ZFS: number of worker threads to scan snapshot roots in parallel (default: 1)',
+    )
     parser.add_argument('--zfs-scan-mode', choices=['match-repos-path', 'full'], default='full')
     parser.add_argument('--zfs-snapshots-limit', type=int, default=0, help='ZFS: max snapshots per root (0=all; default: 0)')
     parser.add_argument('--zfs-granularity', choices=['repo_index', 'repo_root', 'file'], default='file')
+    parser.add_argument(
+        '--zfs-git-workers',
+        type=int,
+        default=1,
+        help='ZFS: when --zfs-granularity=file, worker threads for per-file `git log` attribution (default: 1)',
+    )
+    parser.add_argument(
+        '--zfs-git-max-inflight',
+        type=int,
+        default=0,
+        help='ZFS: global cap on concurrent per-file `git log` subprocesses across all snapshot roots (0 disables; default: 0)',
+    )
     parser.add_argument('--zfs-exclude', action='append', default=[], help='ZFS: exclude dir name (repeatable)')
     parser.add_argument('--zfs-max-seconds-per-root', type=float, default=None, help='ZFS: time budget per root')
     parser.add_argument(
@@ -448,6 +489,45 @@ def main() -> None:
 
     if verbose:
         print(f"Output: {output_path}")
+
+    use_duckdb = bool(getattr(args, 'use_duckdb', False))
+    duck_con = None
+    duck_batch_size = max(int(getattr(args, 'duckdb_batch_size', 50_000) or 50_000), 1)
+
+    allowed_lower = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
+
+    def row_is_allowed(row: Dict) -> bool:
+        if not allowed_lower:
+            return True
+        for col in ("user", "author", "attributed_user"):
+            v = row.get(col)
+            if v is None:
+                continue
+            sv = str(v).strip()
+            if sv == "":
+                continue
+            if sv.lower() not in allowed_lower:
+                return False
+        return True
+
+    def duckdb_append_all_events(rows: List[Dict]) -> None:
+        if duck_con is None:
+            return
+        if not rows:
+            return
+        filtered = [r for r in rows if row_is_allowed(r)]
+        if not filtered:
+            return
+        DuckDbStore.append_rows(duck_con, 'all_events', filtered, batch_size=duck_batch_size)
+
+    if use_duckdb:
+        duck_path = (getattr(args, 'duckdb_path', None) or '').strip()
+        if not duck_path:
+            duck_path = str(Path(str(output_path)).with_suffix('.duckdb'))
+        duck_store = DuckDbStore(Path(duck_path).expanduser().resolve())
+        duck_con = duck_store.connect()
+        if verbose:
+            print(f"DuckDB enabled: {duck_store.db_path}")
 
     # If we run under sudo, prefer the original invoking user.
     default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
@@ -616,11 +696,27 @@ def main() -> None:
 
         zfs_excludes = sorted(set(ZFS_DEFAULT_EXCLUDES).union(args.zfs_exclude))
 
+        zfs_stream_buffer: List[Dict] = []
+
+        def zfs_row_sink(row: Dict) -> None:
+            if duck_con is None:
+                return
+            if not row_is_allowed(row):
+                return
+            zfs_stream_buffer.append(dict(row))
+            if len(zfs_stream_buffer) >= duck_batch_size:
+                DuckDbStore.append_rows(duck_con, 'all_events', zfs_stream_buffer, batch_size=duck_batch_size)
+                zfs_stream_buffer.clear()
+
         # Comprehensive default: local git history scan is included whenever we run the
         # local/ZFS sweep. ZFS progress is handled inside the sweep functions.
         local_summary_df, local_commit_events, local_file_events, zfs_rows = collect_local_git_and_zfs_sweep(
             repos_path=repos_path,
             max_depth=max_depth,
+            local_workers=int(getattr(args, 'local_workers', 1) or 1),
+            zfs_root_workers=int(getattr(args, 'zfs_root_workers', 1) or 1),
+            zfs_git_workers=int(getattr(args, 'zfs_git_workers', 1) or 1),
+            zfs_git_max_inflight=int(getattr(args, 'zfs_git_max_inflight', 0) or 0),
             start_date=start_date,
             end_date=end_date,
             default_user=default_user,
@@ -636,7 +732,12 @@ def main() -> None:
             zfs_progress_every_seconds=(float(args.zfs_progress_every_seconds) if verbose else None),
             verbose=verbose,
             allowed_users=allowed_users,
+            zfs_row_sink=(zfs_row_sink if duck_con is not None else None),
         )
+
+        if duck_con is not None and zfs_stream_buffer:
+            DuckDbStore.append_rows(duck_con, 'all_events', zfs_stream_buffer, batch_size=duck_batch_size)
+            zfs_stream_buffer.clear()
 
         if verbose:
             elapsed = time.perf_counter() - t0
@@ -707,60 +808,100 @@ def main() -> None:
     gh_pr_events = add_source(gh_pr_events, 'github_api')
     gh_issue_events = add_source(gh_issue_events, 'github_api')
 
-    # Build normalized event table
-    if verbose:
-        print("Building normalized event table...")
-    all_events_df = build_all_events(
-        local_commit_events,
-        local_file_events,
-        zfs_rows,
-        gh_commit_events,
-        gh_pr_events,
-        gh_issue_events,
-    )
+    if duck_con is not None:
+        if verbose:
+            print("Populating DuckDB all_events...")
+        duckdb_append_all_events(local_commit_events)
+        duckdb_append_all_events(local_file_events)
+        duckdb_append_all_events(zfs_rows)
+        duckdb_append_all_events(gh_commit_events)
+        duckdb_append_all_events(gh_pr_events)
+        duckdb_append_all_events(gh_issue_events)
+        all_events_df = pd.DataFrame()
+    else:
+        # Build normalized event table
+        if verbose:
+            print("Building normalized event table...")
+        all_events_df = build_all_events(
+            local_commit_events,
+            local_file_events,
+            zfs_rows,
+            gh_commit_events,
+            gh_pr_events,
+            gh_issue_events,
+        )
 
-    # Safety net: ensure output contains only allowlisted identities.
-    if allowed_users:
-        allowed_lower = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
-        for col in ("user", "author", "attributed_user"):
-            if col in all_events_df.columns:
-                s = all_events_df[col]
-                mask = s.isna() | (s.astype(str).str.strip() == "") | s.astype(str).str.strip().str.lower().isin(allowed_lower)
-                all_events_df = all_events_df[mask]
+        # Safety net: ensure output contains only allowlisted identities.
+        if allowed_users:
+            allowed_lower_df = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
+            for col in ("user", "author", "attributed_user"):
+                if col in all_events_df.columns:
+                    s = all_events_df[col]
+                    mask = s.isna() | (s.astype(str).str.strip() == "") | s.astype(str).str.strip().str.lower().isin(allowed_lower_df)
+                    all_events_df = all_events_df[mask]
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         if verbose:
             print("Writing workbook...")
 
-        # Always emit the ZFS sheet (even if there are no rows) so it's obvious whether ZFS ran.
-        zfs_df = dataframe_or_empty(zfs_rows)
-        if zfs_df.empty:
-            zfs_df = pd.DataFrame(
-                columns=[
-                    'event_timestamp',
-                    'source',
-                    'repository',
-                    'file',
-                    'snapshot',
-                    'granularity',
-                    'user',
-                    'attributed_user',
-                    'author',
-                    'email',
-                    'commit',
-                    'status',
-                    'copilot_involved',
-                    'invoker_source',
-                    'raw_author',
-                    'raw_email',
-                ]
+        if duck_con is not None:
+            max_rows = _excel_max_rows()
+            write_query_to_excel(
+                con=duck_con,
+                writer=writer,
+                sheet_base='ZFS Snapshot Timestamps',
+                query="SELECT * FROM all_events WHERE source = 'zfs_snapshot' ORDER BY event_timestamp DESC",
+                excel_max_rows=max_rows,
+                allow_empty=True,
             )
-        write_sheet(writer, 'ZFS Snapshot Timestamps', zfs_df, allow_empty=True)
-        write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
+            write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
 
-        write_sheet(writer, 'All Events', all_events_df, allow_empty=True)
-        # Compatibility: timesheet_from_timestamps prefers User Timeline.
-        write_sheet(writer, 'User Timeline', all_events_df, allow_empty=True)
+            write_query_to_excel(
+                con=duck_con,
+                writer=writer,
+                sheet_base='All Events',
+                query="SELECT * FROM all_events ORDER BY event_timestamp DESC",
+                excel_max_rows=max_rows,
+                allow_empty=True,
+            )
+            write_query_to_excel(
+                con=duck_con,
+                writer=writer,
+                sheet_base='User Timeline',
+                query="SELECT * FROM all_events ORDER BY event_timestamp DESC",
+                excel_max_rows=max_rows,
+                allow_empty=True,
+            )
+        else:
+            # Always emit the ZFS sheet (even if there are no rows) so it's obvious whether ZFS ran.
+            zfs_df = dataframe_or_empty(zfs_rows)
+            if zfs_df.empty:
+                zfs_df = pd.DataFrame(
+                    columns=[
+                        'event_timestamp',
+                        'source',
+                        'repository',
+                        'file',
+                        'snapshot',
+                        'granularity',
+                        'user',
+                        'attributed_user',
+                        'author',
+                        'email',
+                        'commit',
+                        'status',
+                        'copilot_involved',
+                        'invoker_source',
+                        'raw_author',
+                        'raw_email',
+                    ]
+                )
+            write_sheet(writer, 'ZFS Snapshot Timestamps', zfs_df, allow_empty=True)
+            write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
+
+            write_sheet(writer, 'All Events', all_events_df, allow_empty=True)
+            # Compatibility: timesheet_from_timestamps prefers User Timeline.
+            write_sheet(writer, 'User Timeline', all_events_df, allow_empty=True)
 
         # Local sheets
         if not local_summary_df.empty:
@@ -850,6 +991,12 @@ def main() -> None:
         write_sheet(writer, 'GitHub Commit Events', dataframe_or_empty(gh_commit_events))
         write_sheet(writer, 'PR Events', dataframe_or_empty(gh_pr_events))
         write_sheet(writer, 'Issue Events', dataframe_or_empty(gh_issue_events))
+
+    try:
+        if duck_con is not None:
+            duck_con.close()
+    except Exception:
+        pass
 
     if verbose:
         print(f"Wrote unified timestamp suite workbook: {output_path}")

@@ -19,6 +19,9 @@ import shutil
 import sys
 import re
 import time
+import queue
+import threading
+import concurrent.futures
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -29,6 +32,7 @@ from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalyt
 from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
     DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
     collect_snapshot_rows,
+    iter_snapshot_rows,
     find_git_roots,
     list_snapshots,
 )
@@ -38,6 +42,10 @@ def collect_local_git_and_zfs_sweep(
     *,
     repos_path: Path,
     max_depth: int,
+    local_workers: int = 1,
+    zfs_root_workers: int = 1,
+    zfs_git_workers: int = 1,
+    zfs_git_max_inflight: int = 0,
     start_date: Optional[datetime],
     end_date: Optional[datetime],
     default_user: str,
@@ -53,6 +61,7 @@ def collect_local_git_and_zfs_sweep(
     zfs_progress_every_seconds: Optional[float],
     verbose: bool,
     allowed_users: Optional[set[str]],
+    zfs_row_sink: Optional[callable] = None,
 ) -> Tuple[pd.DataFrame, List[Dict], List[Dict], List[Dict]]:
     """Run the local git + working-tree + ZFS snapshot sweep.
 
@@ -68,22 +77,61 @@ def collect_local_git_and_zfs_sweep(
                 maybe_reexec_with_sudo(f"traverse ZFS snapshots under {root}", enabled=allow_sudo)
 
     analytics = LocalGitAnalytics(str(repos_path), allowed_users=allowed_users)
-    summary_df = analytics.analyze_all_repositories(
-        start_date=start_date,
-        end_date=end_date,
-        include_repos=None,
-        exclude_repos=None,
-        max_depth=max_depth,
-        use_session_estimation=False,
-        allowed_users=allowed_users,
-        include_working_tree_timestamps=include_working_tree_timestamps,
-        working_tree_user=default_user,
-        working_tree_excludes=working_tree_excludes,
-    )
+
+    try:
+        local_workers_int = int(local_workers)
+    except Exception:
+        local_workers_int = 1
+    local_workers_int = max(1, local_workers_int)
+
+    if local_workers_int > 1:
+        summary_df = analytics.analyze_all_repositories_parallel(
+            start_date=start_date,
+            end_date=end_date,
+            include_repos=None,
+            exclude_repos=None,
+            max_depth=max_depth,
+            use_session_estimation=False,
+            allowed_users=allowed_users,
+            include_working_tree_timestamps=include_working_tree_timestamps,
+            working_tree_user=default_user,
+            working_tree_excludes=working_tree_excludes,
+            workers=local_workers_int,
+        )
+    else:
+        summary_df = analytics.analyze_all_repositories(
+            start_date=start_date,
+            end_date=end_date,
+            include_repos=None,
+            exclude_repos=None,
+            max_depth=max_depth,
+            use_session_estimation=False,
+            allowed_users=allowed_users,
+            include_working_tree_timestamps=include_working_tree_timestamps,
+            working_tree_user=default_user,
+            working_tree_excludes=working_tree_excludes,
+        )
 
     zfs_rows: List[Dict] = []
     if snapshot_roots:
-        for snapshot_root in snapshot_roots:
+        try:
+            zfs_git_max_inflight_int = int(zfs_git_max_inflight)
+        except Exception:
+            zfs_git_max_inflight_int = 0
+        zfs_git_max_inflight_int = max(0, zfs_git_max_inflight_int)
+        zfs_git_semaphore = (
+            threading.Semaphore(zfs_git_max_inflight_int)
+            if zfs_git_max_inflight_int > 0
+            else None
+        )
+
+        try:
+            zfs_root_workers_int = int(zfs_root_workers)
+        except Exception:
+            zfs_root_workers_int = 1
+        zfs_root_workers_int = max(1, zfs_root_workers_int)
+
+        def _scan_one_root(snapshot_root: Path, row_sink: Optional[callable]) -> List[Dict]:
             try:
                 try:
                     next(iter(snapshot_root.iterdir()), None)
@@ -102,33 +150,98 @@ def collect_local_git_and_zfs_sweep(
                         except Exception:
                             relative = None
 
-                zfs_rows.extend(
-                    collect_zfs_events(
-                        snapshot_root,
-                        default_user,
-                        max_depth,
-                        zfs_excludes,
-                        scan_relative_to_mountpoint=relative,
-                        start_date=start_date,
-                        end_date=end_date,
-                        snapshots_limit=max(int(zfs_snapshots_limit), 0),
-                        granularity=zfs_granularity,
-                        max_seconds=zfs_max_seconds_per_root,
-                        progress_every_seconds=zfs_progress_every_seconds,
-                        verbose=verbose,
-                    )
+                return collect_zfs_events(
+                    snapshot_root,
+                    default_user,
+                    max_depth,
+                    zfs_excludes,
+                    scan_relative_to_mountpoint=relative,
+                    start_date=start_date,
+                    end_date=end_date,
+                    snapshots_limit=max(int(zfs_snapshots_limit), 0),
+                    granularity=zfs_granularity,
+                    max_seconds=zfs_max_seconds_per_root,
+                    zfs_git_workers=int(zfs_git_workers or 1),
+                    zfs_git_semaphore=zfs_git_semaphore,
+                    row_sink=row_sink,
+                    progress_every_seconds=zfs_progress_every_seconds,
+                    verbose=verbose,
                 )
             except PermissionError:
                 if os.geteuid() == 0:
                     print(f"Warning: Permission denied while scanning {snapshot_root} even as root; skipping.")
-                    continue
+                    return []
 
                 maybe_reexec_with_sudo(
                     f"scan ZFS snapshot directory {snapshot_root}",
                     enabled=allow_sudo,
                 )
+                return []
             except Exception as e:
                 print(f"Warning: ZFS snapshot scan failed for {snapshot_root}: {e}")
+                return []
+
+        if zfs_root_workers_int <= 1 or len(snapshot_roots) <= 1:
+            for snapshot_root in snapshot_roots:
+                zfs_rows.extend(_scan_one_root(snapshot_root, zfs_row_sink))
+        else:
+            # Parallelize per snapshot root. To keep DuckDB safe, use a single
+            # consumer that invokes zfs_row_sink, and a bounded queue to avoid
+            # unbounded memory growth.
+            row_queue: "queue.Queue[object]" = queue.Queue(maxsize=20_000)
+            sentinel = object()
+            sink_error = False
+
+            def consumer() -> None:
+                nonlocal sink_error
+                while True:
+                    item = row_queue.get()
+                    try:
+                        if item is sentinel:
+                            return
+                        row = item  # type: ignore[assignment]
+                        if zfs_row_sink is not None and not sink_error:
+                            try:
+                                zfs_row_sink(row)  # type: ignore[misc]
+                            except Exception:
+                                sink_error = True
+                        # Only keep rows in memory when we're not streaming to a sink,
+                        # or if the sink failed (best-effort fallback).
+                        if zfs_row_sink is None or sink_error:
+                            zfs_rows.append(row)  # type: ignore[arg-type]
+                    finally:
+                        row_queue.task_done()
+
+            consumer_thread = threading.Thread(target=consumer, name='zfs-row-consumer', daemon=True)
+            consumer_thread.start()
+
+            def enqueue_sink(row: Dict) -> None:
+                row_queue.put(dict(row))
+
+            done = 0
+            total = len(snapshot_roots)
+            with concurrent.futures.ThreadPoolExecutor(max_workers=zfs_root_workers_int) as ex:
+                futures = {
+                    ex.submit(_scan_one_root, root, enqueue_sink): root
+                    for root in snapshot_roots
+                }
+                for fut in concurrent.futures.as_completed(futures):
+                    root = futures[fut]
+                    try:
+                        # Rows are streamed via enqueue_sink; return is typically empty.
+                        extra = fut.result() or []
+                        for row in extra:
+                            enqueue_sink(row)
+                    except Exception as e:
+                        print(f"Warning: ZFS snapshot scan failed for {root}: {e}")
+                    done += 1
+                    if verbose:
+                        print(f"[ZFS] roots_done={done}/{total}")
+
+            # Drain and stop consumer.
+            row_queue.join()
+            row_queue.put(sentinel)
+            consumer_thread.join()
 
     file_events = list(analytics.file_events)
     if zfs_rows:
@@ -491,11 +604,15 @@ def collect_zfs_events(
     snapshots_limit: int,
     granularity: str,
     max_seconds: Optional[float],
+    zfs_git_workers: int = 1,
+    zfs_git_semaphore: Optional[threading.Semaphore] = None,
     *,
+    row_sink: Optional[callable] = None,
     progress_every_seconds: Optional[float] = None,
     verbose: bool = False,
 ) -> List[Dict]:
     all_rows: List[Dict] = []
+    emitted_rows = 0
     snapshots = list_snapshots(snapshot_root)
 
     # Prefer newest snapshots; names usually sort chronologically.
@@ -544,19 +661,29 @@ def collect_zfs_events(
                 print(f"[ZFS] snapshot={snap.name} repo {repo_index}/{len(repos)}: {repo}")
 
             before = len(all_rows)
-            all_rows.extend(
-                collect_snapshot_rows(
-                    snap.name,
-                    repo,
-                    user,
-                    excludes,
-                    granularity=granularity,
-                    verbose=verbose,
-                    progress_every_seconds=progress_every_seconds,
-                )
-            )
+            added = 0
+            for row in iter_snapshot_rows(
+                snap.name,
+                repo,
+                user,
+                excludes,
+                granularity=granularity,
+                git_workers=int(zfs_git_workers or 1),
+                git_semaphore=zfs_git_semaphore,
+                verbose=verbose,
+                progress_every_seconds=progress_every_seconds,
+            ):
+                if row_sink is not None:
+                    try:
+                        row_sink(row)
+                    except Exception:
+                        # Sink failures should not crash the scan; fallback to in-memory.
+                        all_rows.append(row)
+                else:
+                    all_rows.append(row)
+                emitted_rows += 1
+                added += 1
             if verbose:
-                added = len(all_rows) - before
                 print(f"[ZFS] snapshot={snap.name} repo {repo_index}/{len(repos)} rows_added={added}")
 
             if verbose and progress_every_seconds and progress_every_seconds > 0:
@@ -565,7 +692,7 @@ def collect_zfs_events(
                     elapsed = now - start_time
                     print(
                         f"[ZFS][heartbeat] root={snapshot_root} snapshot={snap_index}/{len(snapshots)} "
-                        f"rows={len(all_rows)} elapsed={elapsed:.1f}s"
+                        f"rows={emitted_rows} elapsed={elapsed:.1f}s"
                     )
                     last_heartbeat = now
     return all_rows
@@ -592,6 +719,12 @@ def main() -> None:
         help="Max number of detected ZFS snapshot roots to scan (0=all; default: 0)",
     )
     parser.add_argument(
+        "--zfs-root-workers",
+        type=int,
+        default=1,
+        help="ZFS: number of worker threads to scan snapshot roots in parallel (default: 1)",
+    )
+    parser.add_argument(
         "--zfs-scan-mode",
         choices=["match-repos-path", "full"],
         default="full",
@@ -608,6 +741,21 @@ def main() -> None:
         choices=['repo_index', 'repo_root', 'file'],
         default='file',
         help="ZFS event granularity (default: file)",
+    )
+    parser.add_argument(
+        "--zfs-git-workers",
+        type=int,
+        default=1,
+        help="ZFS: when --zfs-granularity=file, worker threads for per-file `git log` attribution (default: 1)",
+    )
+    parser.add_argument(
+        "--zfs-git-max-inflight",
+        type=int,
+        default=0,
+        help=(
+            "ZFS: global cap on concurrent per-file `git log` subprocesses across all snapshot roots "
+            "(0 disables; default: 0)"
+        ),
     )
 
     parser.add_argument(
@@ -653,6 +801,12 @@ def main() -> None:
     parser.add_argument("--start-date", default=None, help="Start date (YYYY-MM-DD) for git history")
     parser.add_argument("--end-date", default=None, help="End date (YYYY-MM-DD) for git history")
     parser.add_argument("--max-depth", type=int, default=None, help="Max directory depth to search (default: auto)")
+    parser.add_argument(
+        "--local-workers",
+        type=int,
+        default=1,
+        help="Local git: number of worker processes for scanning repositories in parallel (default: 1)",
+    )
     parser.add_argument("--user", default=None, help="Default user attribution for non-git-history sources")
     parser.add_argument(
         "--include-working-tree-timestamps",
@@ -769,6 +923,10 @@ def main() -> None:
     summary_df, commit_events, file_events, zfs_rows = collect_local_git_and_zfs_sweep(
         repos_path=repos_path,
         max_depth=max_depth,
+        local_workers=int(args.local_workers),
+        zfs_root_workers=int(getattr(args, 'zfs_root_workers', 1) or 1),
+        zfs_git_workers=int(getattr(args, 'zfs_git_workers', 1) or 1),
+        zfs_git_max_inflight=int(getattr(args, 'zfs_git_max_inflight', 0) or 0),
         start_date=start_date,
         end_date=end_date,
         default_user=default_user,

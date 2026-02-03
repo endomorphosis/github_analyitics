@@ -12,10 +12,11 @@ import json
 import csv
 import subprocess
 import time
+import concurrent.futures
 from datetime import datetime, timezone
 from collections import defaultdict
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 import pandas as pd
 
 
@@ -1072,7 +1073,158 @@ class LocalGitAnalytics:
             df = df.sort_values(['date', 'user'], ascending=[False, True])
         
         return df
-    
+
+    def analyze_all_repositories_parallel(
+        self,
+        start_date: Optional[datetime] = None,
+        end_date: Optional[datetime] = None,
+        include_repos: Optional[List[str]] = None,
+        exclude_repos: Optional[List[str]] = None,
+        max_depth: int = 5,
+        use_session_estimation: bool = False,
+        allowed_users: Optional[Set[str]] = None,
+        include_working_tree_timestamps: bool = False,
+        working_tree_user: Optional[str] = None,
+        working_tree_excludes: Optional[List[str]] = None,
+        *,
+        workers: int = 1,
+    ) -> pd.DataFrame:
+        """Parallel version of analyze_all_repositories.
+
+        Uses a process pool to analyze repositories independently, then merges
+        per-user-per-day stats and aggregates commit/file events.
+        """
+
+        try:
+            workers = int(workers)
+        except Exception:
+            workers = 1
+        workers = max(1, workers)
+        if workers <= 1:
+            return self.analyze_all_repositories(
+                start_date=start_date,
+                end_date=end_date,
+                include_repos=include_repos,
+                exclude_repos=exclude_repos,
+                max_depth=max_depth,
+                use_session_estimation=use_session_estimation,
+                allowed_users=allowed_users,
+                include_working_tree_timestamps=include_working_tree_timestamps,
+                working_tree_user=working_tree_user,
+                working_tree_excludes=working_tree_excludes,
+            )
+
+        self.file_events = []
+        self.commit_events = []
+
+        repos = self.find_git_repositories(max_depth)
+        include_set = set(include_repos) if include_repos else None
+        exclude_set = set(exclude_repos) if exclude_repos else None
+
+        filtered_repos: List[Path] = []
+        for repo in repos:
+            repo_name = repo.name
+            if exclude_set and repo_name in exclude_set:
+                print(f"Skipping excluded repository: {repo_name}")
+                continue
+            if include_set and repo_name not in include_set:
+                continue
+            filtered_repos.append(repo)
+
+        print(f"Analyzing {len(filtered_repos)} repositories (parallel workers={workers})...")
+
+        excludes = sorted(set(DEFAULT_WORKING_TREE_EXCLUDES).union(working_tree_excludes or []))
+        inferred_user = (
+            working_tree_user
+            or os.getenv('GITHUB_USERNAME')
+            or os.getenv('GITHUB_USER')
+            or os.getenv('USER')
+            or 'Unknown'
+        )
+
+        start_iso = start_date.isoformat() if start_date else None
+        end_iso = end_date.isoformat() if end_date else None
+        allowed_list = sorted(list(allowed_users)) if allowed_users else None
+
+        all_data: Dict[str, Dict[str, Dict[str, Any]]] = defaultdict(
+            lambda: defaultdict(lambda: defaultdict(int))
+        )
+
+        payloads: List[Dict[str, Any]] = []
+        for repo in filtered_repos:
+            payloads.append(
+                {
+                    'repo_path': str(repo),
+                    'start_date': start_iso,
+                    'end_date': end_iso,
+                    'use_session_estimation': bool(use_session_estimation),
+                    'allowed_users': allowed_list,
+                    'include_working_tree_timestamps': bool(include_working_tree_timestamps),
+                    'working_tree_user': inferred_user,
+                    'working_tree_excludes': excludes,
+                }
+            )
+
+        done = 0
+        total = len(payloads)
+        with concurrent.futures.ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_analyze_repo_worker, p) for p in payloads]
+            for fut in concurrent.futures.as_completed(futures):
+                try:
+                    repo_name, repo_data, commit_events, file_events = fut.result()
+                except Exception as e:
+                    done += 1
+                    print(f"[{done}/{total}] Error analyzing repo: {e}")
+                    continue
+
+                done += 1
+                print(f"[{done}/{total}] Done: {repo_name}")
+
+                for user, dates in (repo_data or {}).items():
+                    for date, stats in (dates or {}).items():
+                        for key, value in (stats or {}).items():
+                            try:
+                                all_data[user][date][key] += value
+                            except Exception:
+                                # Best-effort: ignore non-additive fields.
+                                pass
+
+                if commit_events:
+                    self.commit_events.extend(commit_events)
+                if file_events:
+                    self.file_events.extend(file_events)
+
+        # Convert to DataFrame (same schema as analyze_all_repositories)
+        rows: List[Dict[str, Any]] = []
+        for user, dates in all_data.items():
+            for date, stats in dates.items():
+                total_changes = stats.get('total_changes', 0)
+                commits_count = stats.get('commits', 0)
+                if use_session_estimation and 'session_hours' in stats:
+                    estimated_hours = stats.get('session_hours', 0)
+                else:
+                    estimated_hours = self.estimate_hours_from_commits(
+                        int(commits_count or 0), int(total_changes or 0)
+                    )
+
+                rows.append(
+                    {
+                        'date': date,
+                        'user': user,
+                        'commits': commits_count,
+                        'lines_added': stats.get('additions', 0),
+                        'lines_deleted': stats.get('deletions', 0),
+                        'total_lines_changed': total_changes,
+                        'files_modified': stats.get('files_modified', 0),
+                        'estimated_hours': estimated_hours,
+                    }
+                )
+
+        df = pd.DataFrame(rows)
+        if not df.empty:
+            df = df.sort_values(['date', 'user'], ascending=[False, True])
+        return df
+
     def generate_report(self,
                        output_file: Optional[str] = None,
                        start_date: Optional[datetime] = None,
@@ -1199,6 +1351,55 @@ class LocalGitAnalytics:
         print(f"Total lines changed: {df['total_lines_changed'].sum()}")
         print(f"Total estimated hours: {df['estimated_hours'].sum():.2f}")
         print(f"Date range: {df['date'].min()} to {df['date'].max()}")
+
+
+def _analyze_repo_worker(payload: Dict[str, Any]) -> Tuple[str, Dict, List[Dict], List[Dict]]:
+    """Worker for parallel local analysis.
+
+    Returns: (repo_name, per_user_daily_data, commit_events, file_events)
+    """
+
+    def _to_builtin(obj: Any) -> Any:
+        if isinstance(obj, defaultdict):
+            obj = dict(obj)
+        if isinstance(obj, dict):
+            return {k: _to_builtin(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_to_builtin(v) for v in obj]
+        return obj
+
+    repo_path = Path(str(payload['repo_path'])).resolve()
+    start_date = payload.get('start_date')
+    end_date = payload.get('end_date')
+    start_dt = datetime.fromisoformat(start_date) if start_date else None
+    end_dt = datetime.fromisoformat(end_date) if end_date else None
+
+    allowed_users_list = payload.get('allowed_users')
+    allowed_users_set = set(allowed_users_list) if allowed_users_list else None
+
+    analytics = LocalGitAnalytics(str(repo_path), allowed_users=allowed_users_set)
+    analytics.file_events = []
+    analytics.commit_events = []
+
+    repo_data = analytics.analyze_repository(
+        repo_path,
+        start_dt,
+        end_dt,
+        bool(payload.get('use_session_estimation', False)),
+        allowed_users_set,
+    )
+
+    # analyze_repository uses nested defaultdicts for accumulation; those often
+    # contain non-picklable default factories. Convert to plain dicts so this
+    # worker result can be transferred back to the parent process.
+    repo_data = _to_builtin(repo_data) if repo_data else {}
+
+    if payload.get('include_working_tree_timestamps', False):
+        excludes = payload.get('working_tree_excludes') or []
+        user = (payload.get('working_tree_user') or '').strip() or 'Unknown'
+        analytics.collect_working_tree_file_events(repo_path, user, excludes)
+
+    return repo_path.name, repo_data, list(analytics.commit_events or []), list(analytics.file_events or [])
 
 
 def main():

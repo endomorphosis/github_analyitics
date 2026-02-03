@@ -8,6 +8,8 @@ and records file modification times for each snapshot.
 
 import argparse
 import os
+import concurrent.futures
+import threading
 import subprocess
 import shutil
 import sys
@@ -480,17 +482,18 @@ def _attribute_copilot_invoker(
     return attributed_user, bool(copilot_involved), invoker_source
 
 
-def collect_snapshot_rows(
+def iter_snapshot_rows(
     snapshot_name: str,
     repo_root: Path,
     user: str,
     excludes: Iterable[str],
     granularity: ZfsGranularity = 'file',
     *,
+    git_workers: int = 1,
+    git_semaphore: Optional[threading.Semaphore] = None,
     verbose: bool = False,
     progress_every_seconds: Optional[float] = None,
-) -> List[Dict[str, str]]:
-    rows: List[Dict[str, str]] = []
+) -> Iterable[Dict[str, str]]:
     repo_id = infer_repository_identifier(repo_root)
 
     analytics = LocalGitAnalytics(str(repo_root))
@@ -506,11 +509,10 @@ def collect_snapshot_rows(
         try:
             stat = ts_path.stat()
         except (OSError, FileNotFoundError):
-            return rows
+            return
 
         mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
 
-        # Prefer attribution based on latest commit in this snapshot's repo.
         author_name = user
         author_email = ''
         attributed_user = user
@@ -536,47 +538,58 @@ def collect_snapshot_rows(
             raw_author = author_name
             raw_email = author_email
             author_name = attributed_user
-            # Avoid surfacing bot emails when attributing to invoker.
             author_email = ''
 
-        rows.append(
-            {
-                "snapshot": snapshot_name,
-                "repository": repo_id,
-                "file": "",
-                "event_timestamp": mtime.isoformat(),
-                "user": attributed_user,
-                "author": author_name,
-                "email": author_email,
-                "attributed_user": attributed_user,
-                "copilot_involved": copilot_involved,
-                "invoker_source": invoker_source,
-                "status": "WT",
-                "commit": commit_hash,
-                "source": "zfs_snapshot",
-                "granularity": granularity,
-            }
-        )
-
+        row: Dict[str, str] = {
+            "snapshot": snapshot_name,
+            "repository": repo_id,
+            "file": "",
+            "event_timestamp": mtime.isoformat(),
+            "user": attributed_user,
+            "author": author_name,
+            "email": author_email,
+            "attributed_user": attributed_user,
+            "copilot_involved": copilot_involved,
+            "invoker_source": invoker_source,
+            "status": "WT",
+            "commit": commit_hash,
+            "source": "zfs_snapshot",
+            "granularity": granularity,
+        }
         if raw_author is not None:
-            rows[-1]["raw_author"] = raw_author
+            row["raw_author"] = raw_author
         if raw_email is not None:
-            rows[-1]["raw_email"] = raw_email
-        return rows
+            row["raw_email"] = raw_email
+        yield row
+        return
 
     start_time = time.time()
     last_heartbeat = start_time
     files_seen = 0
     last_rel_path: Optional[str] = None
 
-    for path in iter_files(repo_root, excludes):
-        try:
-            stat = path.stat()
-        except (OSError, FileNotFoundError):
-            continue
-        mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+    try:
+        git_workers_int = int(git_workers)
+    except Exception:
+        git_workers_int = 1
+    # Avoid launching an excessive number of concurrent `git` subprocesses.
+    git_workers_int = max(1, min(git_workers_int, 16))
 
-        rel_path = str(path.relative_to(repo_root)).replace('\\', '/')
+    def maybe_print_heartbeat() -> None:
+        nonlocal last_heartbeat
+        if verbose and progress_every_seconds and progress_every_seconds > 0:
+            now = time.time()
+            if (now - last_heartbeat) >= float(progress_every_seconds):
+                elapsed = now - start_time
+                rate = (files_seen / elapsed) if elapsed > 0 else 0.0
+                print(
+                    f"[ZFS][file] snapshot={snapshot_name} repo={repo_id} files={files_seen} "
+                    f"elapsed={elapsed:.1f}s rate={rate:.2f}/s last={last_rel_path}"
+                )
+                last_heartbeat = now
+
+    def build_file_row(rel_path: str, mtime: datetime, latest_for_path: Optional[Dict[str, str]]) -> Dict[str, str]:
+        nonlocal last_rel_path
         last_rel_path = rel_path
 
         author_name = user
@@ -586,7 +599,6 @@ def collect_snapshot_rows(
         invoker_source = 'snapshot'
         commit_hash = None
 
-        latest_for_path = _git_latest_commit_for_path(repo_root, rel_path)
         if latest_for_path:
             author_name = latest_for_path.get('author_name') or author_name
             author_email = latest_for_path.get('author_email') or author_email
@@ -604,45 +616,126 @@ def collect_snapshot_rows(
             raw_author = author_name
             raw_email = author_email
             author_name = attributed_user
-            # Avoid surfacing bot emails when attributing to invoker.
             author_email = ''
 
-        rows.append(
-            {
-                "snapshot": snapshot_name,
-                "repository": repo_id,
-                "file": rel_path,
-                "event_timestamp": mtime.isoformat(),
-                "user": attributed_user,
-                "author": author_name,
-                "email": author_email,
-                "attributed_user": attributed_user,
-                "copilot_involved": copilot_involved,
-                "invoker_source": invoker_source,
-                "status": "WT",
-                "commit": commit_hash,
-                "source": "zfs_snapshot",
-                "granularity": "file",
-            }
-        )
-
-        files_seen += 1
-        if verbose and progress_every_seconds and progress_every_seconds > 0:
-            now = time.time()
-            if (now - last_heartbeat) >= float(progress_every_seconds):
-                elapsed = now - start_time
-                rate = (files_seen / elapsed) if elapsed > 0 else 0.0
-                print(
-                    f"[ZFS][file] snapshot={snapshot_name} repo={repo_id} files={files_seen} "
-                    f"rows={len(rows)} elapsed={elapsed:.1f}s rate={rate:.2f}/s last={last_rel_path}"
-                )
-                last_heartbeat = now
-
+        row: Dict[str, str] = {
+            "snapshot": snapshot_name,
+            "repository": repo_id,
+            "file": rel_path,
+            "event_timestamp": mtime.isoformat(),
+            "user": attributed_user,
+            "author": author_name,
+            "email": author_email,
+            "attributed_user": attributed_user,
+            "copilot_involved": copilot_involved,
+            "invoker_source": invoker_source,
+            "status": "WT",
+            "commit": commit_hash,
+            "source": "zfs_snapshot",
+            "granularity": "file",
+        }
         if raw_author is not None:
-            rows[-1]["raw_author"] = raw_author
+            row["raw_author"] = raw_author
         if raw_email is not None:
-            rows[-1]["raw_email"] = raw_email
-    return rows
+            row["raw_email"] = raw_email
+        return row
+
+    if git_workers_int <= 1:
+        for path in iter_files(repo_root, excludes):
+            try:
+                stat = path.stat()
+            except (OSError, FileNotFoundError):
+                continue
+            mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+
+            rel_path = str(path.relative_to(repo_root)).replace('\\', '/')
+
+            if git_semaphore is None:
+                latest_for_path = _git_latest_commit_for_path(repo_root, rel_path)
+            else:
+                with git_semaphore:
+                    latest_for_path = _git_latest_commit_for_path(repo_root, rel_path)
+            yield build_file_row(rel_path, mtime, latest_for_path)
+
+            files_seen += 1
+            maybe_print_heartbeat()
+        return
+
+    max_pending = max(64, min(2048, git_workers_int * 32))
+    files_iter = iter(iter_files(repo_root, excludes))
+    pending: Dict[concurrent.futures.Future, Tuple[str, datetime]] = {}
+
+    def limited_latest_commit_for_path(root: Path, rel: str) -> Optional[Dict[str, str]]:
+        if git_semaphore is None:
+            return _git_latest_commit_for_path(root, rel)
+        with git_semaphore:
+            return _git_latest_commit_for_path(root, rel)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=git_workers_int) as ex:
+        while True:
+            while len(pending) < max_pending:
+                try:
+                    path = next(files_iter)
+                except StopIteration:
+                    break
+
+                try:
+                    stat = path.stat()
+                except (OSError, FileNotFoundError):
+                    continue
+                mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc)
+
+                try:
+                    rel_path = str(path.relative_to(repo_root)).replace('\\', '/')
+                except Exception:
+                    continue
+
+                fut = ex.submit(limited_latest_commit_for_path, repo_root, rel_path)
+                pending[fut] = (rel_path, mtime)
+
+            if not pending:
+                break
+
+            done, _ = concurrent.futures.wait(
+                pending,
+                return_when=concurrent.futures.FIRST_COMPLETED,
+            )
+            for fut in done:
+                rel_path, mtime = pending.pop(fut)
+                try:
+                    latest_for_path = fut.result()
+                except Exception:
+                    latest_for_path = None
+                yield build_file_row(rel_path, mtime, latest_for_path)
+                files_seen += 1
+                maybe_print_heartbeat()
+    return
+
+def collect_snapshot_rows(
+    snapshot_name: str,
+    repo_root: Path,
+    user: str,
+    excludes: Iterable[str],
+    granularity: ZfsGranularity = 'file',
+    *,
+    git_workers: int = 1,
+    git_semaphore: Optional[threading.Semaphore] = None,
+    verbose: bool = False,
+    progress_every_seconds: Optional[float] = None,
+) -> List[Dict[str, str]]:
+    return list(
+        iter_snapshot_rows(
+            snapshot_name,
+            repo_root,
+            user,
+            excludes,
+            granularity=granularity,
+            git_workers=git_workers,
+            git_semaphore=git_semaphore,
+            verbose=verbose,
+            progress_every_seconds=progress_every_seconds,
+        )
+    )
 
 
 def main() -> None:
@@ -675,6 +768,12 @@ def main() -> None:
         choices=['file', 'repo_index', 'repo_root'],
         default='file',
         help="Event granularity: file (slow), repo_index (fast), repo_root (fast)",
+    )
+    parser.add_argument(
+        "--git-workers",
+        type=int,
+        default=1,
+        help="When --granularity=file, number of worker threads for per-file `git log` attribution (default: 1)",
     )
     parser.add_argument(
         "--progress-every-seconds",
@@ -762,6 +861,7 @@ def main() -> None:
                         args.user,
                         excludes,
                         granularity=args.granularity,
+                        git_workers=int(getattr(args, 'git_workers', 1) or 1),
                         verbose=bool(args.verbose),
                         progress_every_seconds=float(args.progress_every_seconds),
                     )
