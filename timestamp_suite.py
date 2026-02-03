@@ -121,13 +121,52 @@ def dataframe_or_empty(rows: List[Dict]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def write_sheet(writer: pd.ExcelWriter, sheet_name: str, df: pd.DataFrame) -> None:
-    if df is None or df.empty:
-        return
+def _excel_max_rows() -> int:
+    # Excel worksheet row limit is 1,048,576.
+    # Allow overriding for tests (and power users) via env.
+    try:
+        return int(os.getenv('GITHUB_ANALYTICS_EXCEL_MAX_ROWS', '1048576') or '1048576')
+    except Exception:
+        return 1048576
+
+
+def _sheet_name_with_suffix(base: str, index: int) -> str:
     # Excel sheet name limit is 31 chars.
-    sheet = sheet_name[:31]
-    # If we run under sudo, prefer the original invoking user.
-    default_user = args.user or detect_github_username() or os.getenv('SUDO_USER') or os.getenv('USER') or 'Unknown'
+    base = (base or '').strip() or 'Sheet'
+    if index <= 1:
+        return base[:31]
+
+    suffix = f" ({index})"
+    max_base_len = max(1, 31 - len(suffix))
+    return f"{base[:max_base_len]}{suffix}"
+
+
+def write_sheet(
+    writer: pd.ExcelWriter,
+    sheet_name: str,
+    df: pd.DataFrame,
+    *,
+    allow_empty: bool = False,
+) -> None:
+    if df is None:
+        return
+    if df.empty and not allow_empty:
+        return
+
+    max_rows = _excel_max_rows()
+    max_data_rows = max(1, max_rows - 1)
+    row_count = int(len(df))
+
+    if row_count <= max_data_rows:
+        df.to_excel(writer, sheet_name=_sheet_name_with_suffix(sheet_name, 1), index=False)
+        return
+
+    total_sheets = (row_count + max_data_rows - 1) // max_data_rows
+    print(f"[XLSX] Sheet '{sheet_name}' has {row_count} rows; splitting into {total_sheets} sheets")
+
+    for i, start in enumerate(range(0, row_count, max_data_rows), 1):
+        chunk = df.iloc[start : start + max_data_rows]
+        chunk.to_excel(writer, sheet_name=_sheet_name_with_suffix(sheet_name, i), index=False)
 
 
 def build_all_events(*event_lists: Sequence[Dict]) -> pd.DataFrame:
@@ -574,12 +613,12 @@ def main() -> None:
                     'raw_email',
                 ]
             )
-        zfs_df.to_excel(writer, sheet_name='ZFS Snapshot Timestamps', index=False)
-        write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary))
+        write_sheet(writer, 'ZFS Snapshot Timestamps', zfs_df, allow_empty=True)
+        write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
 
-        write_sheet(writer, 'All Events', all_events_df)
+        write_sheet(writer, 'All Events', all_events_df, allow_empty=True)
         # Compatibility: timesheet_from_timestamps prefers User Timeline.
-        write_sheet(writer, 'User Timeline', all_events_df)
+        write_sheet(writer, 'User Timeline', all_events_df, allow_empty=True)
 
         # Local sheets
         if not local_summary_df.empty:

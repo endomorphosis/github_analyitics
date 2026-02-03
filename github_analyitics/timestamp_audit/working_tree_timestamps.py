@@ -8,6 +8,7 @@ file modification times from the filesystem.
 
 import argparse
 import os
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -20,6 +21,11 @@ DEFAULT_EXCLUDES = {
     ".hg",
     ".svn",
     ".venv",
+    "venv",
+    "env",
+    ".tox",
+    ".nox",
+    "__pypackages__",
     "node_modules",
     "dist",
     "build",
@@ -33,11 +39,13 @@ def find_git_roots(base_path: Path, max_depth: int) -> List[Path]:
     def walk(current: Path, depth: int) -> None:
         if depth > max_depth:
             return
+        if current.name in DEFAULT_EXCLUDES:
+            return
         if (current / ".git").is_dir():
             git_roots.append(current)
             return
         for child in current.iterdir():
-            if child.is_dir() and not child.name.startswith("."):
+            if child.is_dir() and not child.name.startswith(".") and child.name not in DEFAULT_EXCLUDES:
                 walk(child, depth + 1)
 
     walk(base_path, 0)
@@ -46,12 +54,54 @@ def find_git_roots(base_path: Path, max_depth: int) -> List[Path]:
 
 def iter_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
     exclude_set = set(excludes)
+
+    def is_excluded(rel_path: Path) -> bool:
+        parts = rel_path.parts
+        if not parts:
+            return True
+        if rel_path.name.startswith('.'):
+            return True
+        return any(part in exclude_set for part in parts[:-1])
+
+    cmd = [
+        'git',
+        '-C',
+        str(repo_root),
+        'ls-files',
+        '-z',
+        '-c',
+        '-o',
+        '--exclude-standard',
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+        if proc.returncode == 0 and proc.stdout:
+            for raw in proc.stdout.split(b'\x00'):
+                if not raw:
+                    continue
+                try:
+                    rel = Path(raw.decode('utf-8', errors='replace'))
+                except Exception:
+                    continue
+                if is_excluded(rel):
+                    continue
+                yield repo_root / rel
+            return
+    except Exception:
+        pass
+
     for root, dirs, files in os.walk(repo_root):
         dirs[:] = [d for d in dirs if d not in exclude_set]
         for name in files:
             if name.startswith("."):
                 continue
             path = Path(root) / name
+            try:
+                rel = path.relative_to(repo_root)
+            except Exception:
+                rel = Path(name)
+            if is_excluded(rel):
+                continue
             yield path
 
 

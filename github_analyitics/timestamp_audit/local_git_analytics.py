@@ -24,6 +24,11 @@ DEFAULT_WORKING_TREE_EXCLUDES = {
     ".hg",
     ".svn",
     ".venv",
+    "venv",
+    "env",
+    ".tox",
+    ".nox",
+    "__pypackages__",
     "node_modules",
     "dist",
     "build",
@@ -229,8 +234,12 @@ class LocalGitAnalytics:
                 and config.is_file()
             )
         
-        def search_dir(path: Path, depth: int):
+        def search_dir(path: Path, depth: int) -> None:
             if depth > max_depth:
+                return
+
+            # Skip common virtual environment / dependency directories early.
+            if path.name in DEFAULT_WORKING_TREE_EXCLUDES:
                 return
             
             try:
@@ -248,7 +257,7 @@ class LocalGitAnalytics:
                 # Search subdirectories
                 if path.is_dir():
                     for item in path.iterdir():
-                        if item.is_dir() and not item.name.startswith('.'):
+                        if item.is_dir() and not item.name.startswith('.') and item.name not in DEFAULT_WORKING_TREE_EXCLUDES:
                             search_dir(item, depth + 1)
             except (PermissionError, OSError):
                 pass  # Skip directories we can't access
@@ -262,12 +271,59 @@ class LocalGitAnalytics:
     @staticmethod
     def iter_working_tree_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
         exclude_set = set(excludes)
+
+        def is_excluded(rel_path: Path) -> bool:
+            parts = rel_path.parts
+            if not parts:
+                return True
+            # Preserve historical behavior: skip dotfiles.
+            if rel_path.name.startswith('.'):
+                return True
+            # Skip any file inside excluded directories (e.g., venv).
+            return any(part in exclude_set for part in parts[:-1])
+
+        # Prefer git's view of the working tree so we respect .gitignore.
+        cmd = [
+            'git',
+            '-C',
+            str(repo_root),
+            'ls-files',
+            '-z',
+            '-c',
+            '-o',
+            '--exclude-standard',
+        ]
+        try:
+            proc = subprocess.run(cmd, capture_output=True, check=False)
+            if proc.returncode == 0 and proc.stdout:
+                for raw in proc.stdout.split(b'\x00'):
+                    if not raw:
+                        continue
+                    try:
+                        rel = Path(raw.decode('utf-8', errors='replace'))
+                    except Exception:
+                        continue
+                    if is_excluded(rel):
+                        continue
+                    yield repo_root / rel
+                return
+        except Exception:
+            pass
+
+        # Fallback: filesystem walk with coarse exclusions.
         for root, dirs, files in os.walk(repo_root):
             dirs[:] = [d for d in dirs if d not in exclude_set]
             for name in files:
                 if name.startswith('.'):
                     continue
-                yield Path(root) / name
+                path = Path(root) / name
+                try:
+                    rel = path.relative_to(repo_root)
+                except Exception:
+                    rel = Path(name)
+                if is_excluded(rel):
+                    continue
+                yield path
 
     def collect_working_tree_file_events(
         self,

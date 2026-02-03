@@ -28,6 +28,11 @@ DEFAULT_EXCLUDES = {
     ".hg",
     ".svn",
     ".venv",
+    "venv",
+    "env",
+    ".tox",
+    ".nox",
+    "__pypackages__",
     "node_modules",
     "dist",
     "build",
@@ -310,12 +315,59 @@ def infer_repository_identifier(repo_root: Path) -> str:
 
 def iter_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
     exclude_set = set(excludes)
+
+    def is_excluded(rel_path: Path) -> bool:
+        parts = rel_path.parts
+        if not parts:
+            return True
+        # Preserve historical behavior: skip dotfiles.
+        if rel_path.name.startswith('.'):
+            return True
+        # Skip any file inside excluded directories (e.g., venv).
+        return any(part in exclude_set for part in parts[:-1])
+
+    # Prefer git's view of the tree so we respect .gitignore.
+    cmd = [
+        'git',
+        '-C',
+        str(repo_root),
+        'ls-files',
+        '-z',
+        '-c',
+        '-o',
+        '--exclude-standard',
+    ]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, check=False)
+        if proc.returncode == 0 and proc.stdout:
+            for raw in proc.stdout.split(b'\x00'):
+                if not raw:
+                    continue
+                try:
+                    rel = Path(raw.decode('utf-8', errors='replace'))
+                except Exception:
+                    continue
+                if is_excluded(rel):
+                    continue
+                yield repo_root / rel
+            return
+    except Exception:
+        pass
+
+    # Fallback: filesystem walk with coarse exclusions.
     for root, dirs, files in os.walk(repo_root):
         dirs[:] = [d for d in dirs if d not in exclude_set]
         for name in files:
             if name.startswith("."):
                 continue
-            yield Path(root) / name
+            path = Path(root) / name
+            try:
+                rel = path.relative_to(repo_root)
+            except Exception:
+                rel = Path(name)
+            if is_excluded(rel):
+                continue
+            yield path
 
 
 ZfsGranularity = Literal['file', 'repo_index', 'repo_root']
