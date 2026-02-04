@@ -203,6 +203,33 @@ GitHub API has rate limits:
 3. **Network**: A stable, fast internet connection helps
 4. **Patience**: Large organizations with many repos may take several minutes
 
+### Performance tips for the unified timestamp suite
+
+The unified timestamp suite (`python -m github_analyitics.timestamp_audit.timestamp_suite`) can become very large (millions of events) when ZFS is enabled and `--zfs-granularity file` is used.
+
+Recommended options:
+
+- `--use-duckdb`: Strongly recommended for huge runs. It reduces memory pressure and exports to Excel in chunks.
+- `--local-workers N`: Parallelize local repo scanning (processes). Start with `N=2..4`.
+- `--zfs-root-workers N`: Parallelize scanning across ZFS snapshot roots (threads). Start with `N=1..2`.
+- `--zfs-git-workers N`: When `--zfs-granularity file`, parallelize per-file `git log` attribution (threads). Start with `N=2..4`.
+- `--zfs-git-max-inflight N`: Global cap across all roots for concurrent per-file `git log` subprocesses (prevents overload). Start with `N=2..8`.
+
+Example:
+
+```bash
+python -m github_analyitics.timestamp_audit.timestamp_suite \
+  --allowed-users-file _allowed_users.txt \
+  --sources local,zfs \
+  --use-duckdb \
+  --local-workers 4 \
+  --zfs-root-workers 2 \
+  --zfs-git-workers 4 \
+  --zfs-git-max-inflight 4
+```
+
+If your machine becomes sluggish or ZFS scanning starts timing out, reduce `--zfs-git-max-inflight` first.
+
 ## Examples
 
 See `example_usage.py` for:

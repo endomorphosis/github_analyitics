@@ -68,6 +68,33 @@ Convenience script:
 ./run_timestamp_suite.sh
 ```
 
+### Performance & scaling
+
+If you’re scanning many local repos and/or large ZFS snapshot trees, these options help speed things up without hammering GitHub (they only affect local + ZFS work):
+
+- `--use-duckdb`: Writes events to DuckDB first, then exports to Excel in chunks. Recommended for very large runs.
+- `--local-workers N`: Scans local repositories in parallel using **processes**.
+- `--zfs-root-workers N`: Scans multiple ZFS snapshot roots in parallel using **threads**.
+- `--zfs-git-workers N`: When `--zfs-granularity file`, runs per-file `git log -1 -- <file>` attribution concurrently (threads).
+- `--zfs-git-max-inflight N`: Global cap on concurrent per-file `git log` subprocesses across all roots (useful when combining the above).
+
+Suggested starting point for big ZFS runs (adjust to your machine):
+
+```bash
+python -m github_analyitics.timestamp_audit.timestamp_suite \
+  --sources local,zfs \
+  --use-duckdb \
+  --local-workers 4 \
+  --zfs-root-workers 2 \
+  --zfs-git-workers 4 \
+  --zfs-git-max-inflight 4
+```
+
+Notes:
+
+- Total concurrent per-file `git log` work is approximately bounded by `--zfs-git-max-inflight` (if set), otherwise it can approach `--zfs-root-workers × --zfs-git-workers`.
+- If you see the system get sluggish, reduce `--zfs-git-max-inflight` first.
+
 ### Quick Start Script
 
 For convenience, use the provided script:

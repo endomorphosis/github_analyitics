@@ -59,6 +59,21 @@ python -m github_analyitics.reporting.github_analytics --exclude-repos test-repo
 python -m github_analyitics.reporting.github_analytics --filter-by-user username
 ```
 
+### Scaling the unified timestamp suite
+
+For large local + ZFS runs, prefer DuckDB and bounded parallelism:
+
+```bash
+python -m github_analyitics.timestamp_audit.timestamp_suite \
+	--use-duckdb \
+	--local-workers 4 \
+	--zfs-root-workers 2 \
+	--zfs-git-workers 4 \
+	--zfs-git-max-inflight 4
+```
+
+If the machine gets sluggish, reduce `--zfs-git-max-inflight` first.
+
 ## Advanced Features
 
 ### API Rate Limiting
