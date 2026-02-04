@@ -74,6 +74,15 @@ python -m github_analyitics.timestamp_audit.timestamp_suite \
 
 If the machine gets sluggish, reduce `--zfs-git-max-inflight` first.
 
+Optional: include native filesystem timestamps (source `fs`):
+
+```bash
+python -m github_analyitics.timestamp_audit.timestamp_suite \
+	--sources local,zfs,fs \
+	--fs-root "$HOME" \
+	--fs-max-files 200000
+```
+
 ## Advanced Features
 
 ### API Rate Limiting

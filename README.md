@@ -56,6 +56,13 @@ This writes a workbook to `data_reports/<timestamp>/github_analytics_timestamps_
 
 ZFS note: when ZFS is enabled (default), the suite auto-detects and scans all visible `.zfs/snapshot` roots by default. If you want to restrict ZFS scanning to a single root for a deterministic run, pass `--zfs-snapshot-root <path> --zfs-snapshot-root-only`.
 
+Native filesystem note: you can optionally include a filesystem-rooted scan (source `fs`). This is OS-aware:
+
+- Linux/Unix: scans ext2/ext3/ext4 roots
+- Windows: scans NTFS roots
+
+Enable it with `--sources ... ,fs`. If you don’t pass `--fs-root`, it defaults to scanning the `--repos-path` base.
+
 With a date range:
 
 ```bash
@@ -94,6 +101,13 @@ Notes:
 
 - Total concurrent per-file `git log` work is approximately bounded by `--zfs-git-max-inflight` (if set), otherwise it can approach `--zfs-root-workers × --zfs-git-workers`.
 - If you see the system get sluggish, reduce `--zfs-git-max-inflight` first.
+
+Native filesystem (`fs`) options:
+
+- `--fs-root PATH`: Add one or more scan roots (repeatable)
+- `--fs-exclude NAME`: Exclude directory names (repeatable)
+- `--fs-max-files N`: Cap emitted rows per root (useful for quick tests)
+- `--fs-progress-every-seconds N`: Heartbeat interval during large scans
 
 ### Quick Start Script
 

@@ -47,6 +47,10 @@ from github_analyitics.timestamp_audit.collect_all_timestamps import (
 from github_analyitics.reporting.github_analytics import GitHubAnalytics
 from github_analyitics.timestamp_audit.local_git_analytics import LocalGitAnalytics
 from github_analyitics.timestamp_audit.duckdb_store import DuckDbStore, write_query_to_excel
+from github_analyitics.timestamp_audit.native_fs_timestamps import (
+    DEFAULT_NATIVE_FS_EXCLUDES,
+    collect_native_fs_events,
+)
 from github_analyitics.timestamp_audit.zfs_snapshot_git_timestamps import (
     DEFAULT_EXCLUDES as ZFS_DEFAULT_EXCLUDES,
     find_git_roots,
@@ -326,7 +330,7 @@ def main() -> None:
     parser.add_argument(
         '--sources',
         default='github,local,zfs',
-        help='Comma-separated sources: github,local,zfs (default: github,local,zfs)',
+        help='Comma-separated sources: github,local,zfs,fs (default: github,local,zfs)',
     )
 
     # GitHub options
@@ -424,6 +428,33 @@ def main() -> None:
         help='ZFS: when --verbose, print a watchdog heartbeat every N seconds (0 disables; default: 30)',
     )
 
+    # Native filesystem options (ext2/3/4 on Linux; NTFS on Windows)
+    parser.add_argument(
+        '--fs-root',
+        action='append',
+        default=[],
+        help='Native FS: scan root path (repeatable). If omitted and fs source enabled, defaults to --repos-path base.',
+    )
+    parser.add_argument('--fs-exclude', action='append', default=[], help='Native FS: exclude dir name (repeatable)')
+    parser.add_argument('--fs-follow-symlinks', action='store_true', help='Native FS: follow symlinks (default: false)')
+    parser.add_argument(
+        '--fs-max-files',
+        type=int,
+        default=0,
+        help='Native FS: maximum number of files to emit per root (0=unlimited; default: 0)',
+    )
+    parser.add_argument(
+        '--fs-progress-every-seconds',
+        type=float,
+        default=30.0,
+        help='Native FS: print a heartbeat every N seconds (0 disables; default: 30)',
+    )
+    parser.add_argument(
+        '--fs-force',
+        action='store_true',
+        help='Native FS: scan even when filesystem/platform checks would normally skip the root',
+    )
+
     args = parser.parse_args()
 
     # Enable watchdog heartbeats during slow local `git log` calls.
@@ -449,6 +480,7 @@ def main() -> None:
     want_github = 'github' in sources
     want_local = 'local' in sources
     want_zfs = 'zfs' in sources
+    want_fs = 'fs' in sources
 
     # Comprehensive defaults, with opt-out flags.
     include_working_tree_timestamps = not bool(getattr(args, 'skip_working_tree_timestamps', False))
@@ -472,7 +504,7 @@ def main() -> None:
 
     if verbose:
         print(f"Sources enabled: {', '.join(sorted(sources))}")
-        print(f"Source flags: want_github={want_github} want_local={want_local} want_zfs={want_zfs}")
+        print(f"Source flags: want_github={want_github} want_local={want_local} want_zfs={want_zfs} want_fs={want_fs}")
 
     start_date = parse_date(args.start_date)
     end_date = parse_date(args.end_date)
@@ -537,6 +569,10 @@ def main() -> None:
     local_commit_events: List[Dict] = []
     local_file_events: List[Dict] = []
     zfs_rows: List[Dict] = []
+    zfs_scan_summary: List[Dict] = []
+
+    fs_rows: List[Dict] = []
+    fs_scan_summary: List[Dict] = []
 
     if want_local or want_zfs:
         t0 = time.perf_counter()
@@ -550,7 +586,6 @@ def main() -> None:
             print(f"ZFS enabled: {want_zfs} (allow_sudo={allow_sudo})")
 
         snapshot_roots: List[Path] = []
-        zfs_scan_summary: List[Dict] = []
         if want_zfs:
             if verbose:
                 print("Detecting ZFS snapshot roots...")
@@ -743,6 +778,51 @@ def main() -> None:
             elapsed = time.perf_counter() - t0
             print(f"Local/ZFS sweep complete in {elapsed:.2f}s")
 
+    # --- Native filesystem sweep ---
+    # Separate from the working-tree scan: this is filesystem-rooted and OS-aware.
+    if want_fs:
+        t0 = time.perf_counter()
+
+        fs_roots = [Path(p).expanduser() for p in (getattr(args, 'fs_root', None) or []) if str(p).strip()]
+        if not fs_roots:
+            # Default to scanning the repo base path when fs source is enabled.
+            repos_path = guess_repos_base_path(args.repos_path)
+            fs_roots = [repos_path]
+            if verbose:
+                print(f"Native FS: --fs-root not provided; defaulting to repos base path: {repos_path}")
+
+        fs_excludes = sorted(set(DEFAULT_NATIVE_FS_EXCLUDES).union(args.fs_exclude))
+        fs_stream_buffer: List[Dict] = []
+
+        def fs_row_sink(row: Dict) -> None:
+            if duck_con is None:
+                return
+            if not row_is_allowed(row):
+                return
+            fs_stream_buffer.append(dict(row))
+            if len(fs_stream_buffer) >= duck_batch_size:
+                DuckDbStore.append_rows(duck_con, 'all_events', fs_stream_buffer, batch_size=duck_batch_size)
+                fs_stream_buffer.clear()
+
+        fs_rows, fs_scan_summary = collect_native_fs_events(
+            scan_roots=fs_roots,
+            user=default_user,
+            excludes=fs_excludes,
+            follow_symlinks=bool(getattr(args, 'fs_follow_symlinks', False)),
+            max_files=int(getattr(args, 'fs_max_files', 0) or 0),
+            progress_every_seconds=float(getattr(args, 'fs_progress_every_seconds', 30.0) or 0),
+            force=bool(getattr(args, 'fs_force', False)),
+            row_sink=(fs_row_sink if duck_con is not None else None),
+        )
+
+        if duck_con is not None and fs_stream_buffer:
+            DuckDbStore.append_rows(duck_con, 'all_events', fs_stream_buffer, batch_size=duck_batch_size)
+            fs_stream_buffer.clear()
+
+        if verbose:
+            elapsed = time.perf_counter() - t0
+            print(f"Native FS sweep complete in {elapsed:.2f}s")
+
     # --- GitHub API sweep ---
     gh_summary_df = pd.DataFrame()
     gh_commit_events: List[Dict] = []
@@ -803,6 +883,7 @@ def main() -> None:
     local_commit_events = add_source(local_commit_events, 'local_git')
     local_file_events = add_source(local_file_events, 'local_git')
     zfs_rows = add_source(zfs_rows, 'zfs_snapshot')
+    fs_rows = add_source(fs_rows, 'native_fs')
 
     gh_commit_events = add_source(gh_commit_events, 'github_api')
     gh_pr_events = add_source(gh_pr_events, 'github_api')
@@ -814,6 +895,7 @@ def main() -> None:
         duckdb_append_all_events(local_commit_events)
         duckdb_append_all_events(local_file_events)
         duckdb_append_all_events(zfs_rows)
+        duckdb_append_all_events(fs_rows)
         duckdb_append_all_events(gh_commit_events)
         duckdb_append_all_events(gh_pr_events)
         duckdb_append_all_events(gh_issue_events)
@@ -826,6 +908,7 @@ def main() -> None:
             local_commit_events,
             local_file_events,
             zfs_rows,
+            fs_rows,
             gh_commit_events,
             gh_pr_events,
             gh_issue_events,
@@ -855,6 +938,16 @@ def main() -> None:
                 allow_empty=True,
             )
             write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
+
+            write_query_to_excel(
+                con=duck_con,
+                writer=writer,
+                sheet_base='Native FS Timestamps',
+                query="SELECT * FROM all_events WHERE source = 'native_fs' ORDER BY event_timestamp DESC",
+                excel_max_rows=max_rows,
+                allow_empty=True,
+            )
+            write_sheet(writer, 'Native FS Scan Summary', dataframe_or_empty(fs_scan_summary), allow_empty=True)
 
             write_query_to_excel(
                 con=duck_con,
@@ -898,6 +991,30 @@ def main() -> None:
                 )
             write_sheet(writer, 'ZFS Snapshot Timestamps', zfs_df, allow_empty=True)
             write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
+
+            fs_df = dataframe_or_empty(fs_rows)
+            if fs_df.empty:
+                fs_df = pd.DataFrame(
+                    columns=[
+                        'event_timestamp',
+                        'source',
+                        'repository',
+                        'file',
+                        'scan_root',
+                        'mountpoint',
+                        'filesystem_type',
+                        'user',
+                        'attributed_user',
+                        'author',
+                        'email',
+                        'commit',
+                        'status',
+                        'copilot_involved',
+                        'invoker_source',
+                    ]
+                )
+            write_sheet(writer, 'Native FS Timestamps', fs_df, allow_empty=True)
+            write_sheet(writer, 'Native FS Scan Summary', dataframe_or_empty(fs_scan_summary), allow_empty=True)
 
             write_sheet(writer, 'All Events', all_events_df, allow_empty=True)
             # Compatibility: timesheet_from_timestamps prefers User Timeline.

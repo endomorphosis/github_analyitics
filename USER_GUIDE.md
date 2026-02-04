@@ -215,6 +215,13 @@ Recommended options:
 - `--zfs-git-workers N`: When `--zfs-granularity file`, parallelize per-file `git log` attribution (threads). Start with `N=2..4`.
 - `--zfs-git-max-inflight N`: Global cap across all roots for concurrent per-file `git log` subprocesses (prevents overload). Start with `N=2..8`.
 
+Optional native filesystem source (`fs`):
+
+- Enable with `--sources ... ,fs`
+- Linux/Unix: scans ext2/ext3/ext4 roots; Windows: scans NTFS roots
+- `--fs-root PATH` (repeatable) controls what gets scanned; if omitted, defaults to `--repos-path` base
+- `--fs-max-files N` is handy for quick smoke checks
+
 Example:
 
 ```bash
