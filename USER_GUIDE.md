@@ -209,7 +209,7 @@ The unified timestamp suite (`python -m github_analyitics.timestamp_audit.timest
 
 Recommended options:
 
-- `--use-duckdb`: Strongly recommended for huge runs. It reduces memory pressure and exports to Excel in chunks.
+- DuckDB is enabled by default (reduces memory pressure and exports to Excel in chunks). Use `--no-duckdb` to disable.
 - `--local-workers N`: Parallelize local repo scanning (processes). Start with `N=2..4`.
 - `--zfs-root-workers N`: Parallelize scanning across ZFS snapshot roots (threads). Start with `N=1..2`.
 - `--zfs-git-workers N`: When `--zfs-granularity file`, parallelize per-file `git log` attribution (threads). Start with `N=2..4`.
@@ -218,6 +218,7 @@ Recommended options:
 Optional native filesystem source (`fs`):
 
 - Enable with `--sources ... ,fs`
+- (Default) `fs` is enabled in the suite’s default `--sources` value; remove it by passing `--sources github,local,zfs`.
 - Linux/Unix: scans ext2/ext3/ext4 roots; Windows: scans NTFS roots
 - `--fs-root PATH` (repeatable) controls what gets scanned; if omitted, defaults to `--repos-path` base
 - `--fs-max-files N` is handy for quick smoke checks

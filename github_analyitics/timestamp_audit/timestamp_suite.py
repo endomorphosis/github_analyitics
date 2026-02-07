@@ -301,12 +301,18 @@ def main() -> None:
     parser.add_argument(
         '--use-duckdb',
         action='store_true',
+        default=True,
         help='Write large event tables to a DuckDB database first, then export to XLSX in chunks (reduces memory and speeds up huge exports)',
+    )
+    parser.add_argument(
+        '--no-duckdb',
+        action='store_true',
+        help='Disable DuckDB (enabled by default); write event tables in-memory and export directly to XLSX',
     )
     parser.add_argument(
         '--duckdb-path',
         default=None,
-        help='DuckDB database file path (default: <output>.duckdb when --use-duckdb is set)',
+        help='DuckDB database file path (default: <output>.duckdb when DuckDB is enabled)',
     )
     parser.add_argument(
         '--duckdb-batch-size',
@@ -329,8 +335,8 @@ def main() -> None:
 
     parser.add_argument(
         '--sources',
-        default='github,local,zfs',
-        help='Comma-separated sources: github,local,zfs,fs (default: github,local,zfs)',
+        default='github,local,zfs,fs',
+        help='Comma-separated sources: github,local,zfs,fs (default: github,local,zfs,fs)',
     )
 
     # GitHub options
@@ -522,7 +528,7 @@ def main() -> None:
     if verbose:
         print(f"Output: {output_path}")
 
-    use_duckdb = bool(getattr(args, 'use_duckdb', False))
+    use_duckdb = bool(getattr(args, 'use_duckdb', False)) and (not bool(getattr(args, 'no_duckdb', False)))
     duck_con = None
     duck_batch_size = max(int(getattr(args, 'duckdb_batch_size', 50_000) or 50_000), 1)
 

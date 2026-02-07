@@ -54,6 +54,11 @@ python -m github_analyitics.timestamp_audit.timestamp_suite
 
 This writes a workbook to `data_reports/<timestamp>/github_analytics_timestamps_suite.xlsx` by default.
 
+Defaults (no flags):
+
+- DuckDB export is enabled by default (faster + lower memory). Use `--no-duckdb` to disable.
+- Native filesystem scan (source `fs`) is enabled by default.
+
 ZFS note: when ZFS is enabled (default), the suite auto-detects and scans all visible `.zfs/snapshot` roots by default. If you want to restrict ZFS scanning to a single root for a deterministic run, pass `--zfs-snapshot-root <path> --zfs-snapshot-root-only`.
 
 Native filesystem note: you can optionally include a filesystem-rooted scan (source `fs`). This is OS-aware:
@@ -79,7 +84,8 @@ Convenience script:
 
 If you’re scanning many local repos and/or large ZFS snapshot trees, these options help speed things up without hammering GitHub (they only affect local + ZFS work):
 
-- `--use-duckdb`: Writes events to DuckDB first, then exports to Excel in chunks. Recommended for very large runs.
+- DuckDB is enabled by default. Use `--no-duckdb` to disable.
+- `--duckdb-path PATH`: Override the default `<output>.duckdb` path.
 - `--local-workers N`: Scans local repositories in parallel using **processes**.
 - `--zfs-root-workers N`: Scans multiple ZFS snapshot roots in parallel using **threads**.
 - `--zfs-git-workers N`: When `--zfs-granularity file`, runs per-file `git log -1 -- <file>` attribution concurrently (threads).

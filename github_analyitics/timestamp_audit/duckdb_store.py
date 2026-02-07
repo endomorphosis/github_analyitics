@@ -122,8 +122,17 @@ def write_query_to_excel(
 
     max_data_rows = max(1, int(excel_max_rows) - 1)
 
-    count = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
-    count = int(count or 0)
+    try:
+        count = con.execute(f"SELECT COUNT(*) FROM ({query}) q").fetchone()[0]
+        count = int(count or 0)
+    except Exception as e:
+        if not allow_empty:
+            return
+        # Common case: DuckDB enabled but the backing table was never created
+        # (e.g., all sources produced zero rows).
+        print(f"[DuckDB→XLSX] '{sheet_base}' query failed ({e.__class__.__name__}); writing empty sheet")
+        pd.DataFrame().to_excel(writer, sheet_name=sheet_base[:31], index=False)
+        return
 
     if count == 0:
         if not allow_empty:

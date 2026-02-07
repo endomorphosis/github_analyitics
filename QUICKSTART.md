@@ -61,11 +61,10 @@ python -m github_analyitics.reporting.github_analytics --filter-by-user username
 
 ### Scaling the unified timestamp suite
 
-For large local + ZFS runs, prefer DuckDB and bounded parallelism:
+For large local + ZFS runs, DuckDB is enabled by default; combine it with bounded parallelism:
 
 ```bash
 python -m github_analyitics.timestamp_audit.timestamp_suite \
-	--use-duckdb \
 	--local-workers 4 \
 	--zfs-root-workers 2 \
 	--zfs-git-workers 4 \
