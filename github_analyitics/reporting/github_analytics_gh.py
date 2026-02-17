@@ -57,6 +57,16 @@ def _date_key(dt: datetime) -> str:
     return _to_utc(dt).date().isoformat()
 
 
+def _parse_number_from_api_url(url: Optional[str]) -> Optional[int]:
+    if not url:
+        return None
+    try:
+        tail = str(url).rstrip("/").rsplit("/", 1)[-1]
+        return int(tail)
+    except Exception:
+        return None
+
+
 class GitHubAnalytics:
     """Analyzes GitHub repository activity via `gh api` and generates reports."""
 
@@ -195,12 +205,52 @@ class GitHubAnalytics:
                 return []
             raise
 
+    def _iter_repo_issue_comments(self, full_name: str, *, start_date: Optional[datetime]) -> List[Dict]:
+        """List all issue comments across the repo (includes PR conversation comments)."""
+        params: Dict[str, str] = {"per_page": "100"}
+        if start_date:
+            params["since"] = _to_utc(start_date).isoformat().replace("+00:00", "Z")
+        try:
+            return list(
+                gh_api_json(
+                    f"/repos/{full_name}/issues/comments",
+                    params=params,
+                    paginate=True,
+                )
+                or []
+            )
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
+
     def _iter_pr_review_comments(self, full_name: str, number: int) -> List[Dict]:
         try:
             return list(
                 gh_api_json(
                     f"/repos/{full_name}/pulls/{number}/comments",
                     params={"per_page": "100"},
+                    paginate=True,
+                )
+                or []
+            )
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
+
+    def _iter_repo_pr_review_comments(self, full_name: str, *, start_date: Optional[datetime]) -> List[Dict]:
+        """List all PR review comments across the repo."""
+        params: Dict[str, str] = {"per_page": "100"}
+        # No server-side since filter; we filter client-side.
+        _ = start_date
+        try:
+            return list(
+                gh_api_json(
+                    f"/repos/{full_name}/pulls/comments",
+                    params=params,
                     paginate=True,
                 )
                 or []
@@ -352,6 +402,23 @@ class GitHubAnalytics:
 
             # --- Pull requests ---
             pulls = self._iter_pulls(full_name)
+            pr_meta: Dict[int, Dict[str, Optional[str]]] = {}
+            for pr in pulls:
+                n = pr.get("number")
+                if n is None:
+                    continue
+                try:
+                    pr_number = int(n)
+                except Exception:
+                    continue
+                pr_meta[pr_number] = {
+                    "title": pr.get("title"),
+                    "url": pr.get("html_url"),
+                    "author": ((pr.get("user") or {}).get("login") or "Unknown"),
+                }
+
+            pr_numbers: Set[int] = set(pr_meta.keys())
+
             for pr in pulls:
                 number = pr.get("number")
                 title = pr.get("title")
@@ -414,88 +481,39 @@ class GitHubAnalytics:
                             }
                         )
 
-                if include_pr_comments and number is not None:
-                    # PR conversation comments are issue comments.
-                    for c in self._iter_issue_comments(full_name, int(number)):
-                        c_user = ((c.get("user") or {}).get("login") or "Unknown")
-                        if not is_allowed(c_user):
+                # NOTE: PR comment and review-comment capture is done once per repo
+                # (see below) to avoid per-PR API calls.
+
+                if include_pr_review_events and number is not None:
+                    # Review submission events are still per-PR.
+                    for r in self._iter_pr_reviews(full_name, int(number)):
+                        r_user = ((r.get("user") or {}).get("login") or "Unknown")
+                        if not is_allowed(r_user):
                             continue
 
-                        c_dt = _parse_iso8601(c.get("created_at"))
-                        if not c_dt:
+                        r_dt = _parse_iso8601(r.get("submitted_at"))
+                        if not r_dt:
                             continue
-                        if start_date and _to_utc(c_dt) < _to_utc(start_date):
+                        if start_date and _to_utc(r_dt) < _to_utc(start_date):
                             continue
-                        if end_date and _to_utc(c_dt) > _to_utc(end_date):
+                        if end_date and _to_utc(r_dt) > _to_utc(end_date):
                             continue
-                        date = _date_key(c_dt)
-                        data[c_user][date]["issue_comments"] += 1
                         self.pr_events.append(
                             {
                                 "repository": full_name,
                                 "number": number,
                                 "title": title,
-                                "author": c_user,
-                                "event_type": "comment",
-                                "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
+                                "author": r_user,
+                                "event_type": "review_submitted",
+                                "event_timestamp": _to_utc(r_dt).isoformat().replace("+00:00", "Z"),
                                 "url": url,
                             }
                         )
 
-                    if include_pr_review_comments:
-                        for c in self._iter_pr_review_comments(full_name, int(number)):
-                            c_user = ((c.get("user") or {}).get("login") or "Unknown")
-                            if not is_allowed(c_user):
-                                continue
-
-                            c_dt = _parse_iso8601(c.get("created_at"))
-                            if not c_dt:
-                                continue
-                            if start_date and _to_utc(c_dt) < _to_utc(start_date):
-                                continue
-                            if end_date and _to_utc(c_dt) > _to_utc(end_date):
-                                continue
-                            date = _date_key(c_dt)
-                            data[c_user][date]["issue_comments"] += 1
-                            self.pr_events.append(
-                                {
-                                    "repository": full_name,
-                                    "number": number,
-                                    "title": title,
-                                    "author": c_user,
-                                    "event_type": "review_comment",
-                                    "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
-                                    "url": url,
-                                }
-                            )
-
-                    if include_pr_review_events:
-                        for r in self._iter_pr_reviews(full_name, int(number)):
-                            r_user = ((r.get("user") or {}).get("login") or "Unknown")
-                            if not is_allowed(r_user):
-                                continue
-
-                            r_dt = _parse_iso8601(r.get("submitted_at"))
-                            if not r_dt:
-                                continue
-                            if start_date and _to_utc(r_dt) < _to_utc(start_date):
-                                continue
-                            if end_date and _to_utc(r_dt) > _to_utc(end_date):
-                                continue
-                            self.pr_events.append(
-                                {
-                                    "repository": full_name,
-                                    "number": number,
-                                    "title": title,
-                                    "author": r_user,
-                                    "event_type": "review_submitted",
-                                    "event_timestamp": _to_utc(r_dt).isoformat().replace("+00:00", "Z"),
-                                    "url": url,
-                                }
-                            )
-
             # --- Issues ---
             issues = self._iter_issues(full_name, start_date=start_date)
+            issue_meta: Dict[int, Dict[str, Optional[str]]] = {}
+            issue_numbers: Set[int] = set()
             for issue in issues:
                 is_pr = bool(issue.get("pull_request"))
                 if is_pr and not include_issue_pr_comments:
@@ -505,6 +523,16 @@ class GitHubAnalytics:
                 title = issue.get("title")
                 url = issue.get("html_url")
                 author = ((issue.get("user") or {}).get("login") or "Unknown")
+
+                issue_number_int: Optional[int] = None
+                if number is not None and not is_pr:
+                    try:
+                        issue_number_int = int(number)
+                    except Exception:
+                        issue_number_int = None
+                    if issue_number_int is not None:
+                        issue_numbers.add(issue_number_int)
+                        issue_meta[issue_number_int] = {"title": title, "url": url, "author": author}
 
                 created_at = _parse_iso8601(issue.get("created_at"))
                 closed_at = _parse_iso8601(issue.get("closed_at"))
@@ -547,48 +575,90 @@ class GitHubAnalytics:
                             }
                         )
 
-                # Comments
-                if number is not None:
-                    for c in self._iter_issue_comments(full_name, int(number)):
-                        c_user = ((c.get("user") or {}).get("login") or "Unknown")
-                        if not is_allowed(c_user):
-                            continue
+                # NOTE: Issue and PR conversation comment capture is done once per repo
+                # (see below) to avoid per-issue API calls.
 
-                        c_dt = _parse_iso8601(c.get("created_at"))
-                        if not c_dt:
-                            continue
-                        if start_date and _to_utc(c_dt) < _to_utc(start_date):
-                            continue
-                        if end_date and _to_utc(c_dt) > _to_utc(end_date):
-                            continue
-                        date = _date_key(c_dt)
-                        data[c_user][date]["issue_comments"] += 1
-                        if is_pr:
-                            # PR conversation comments accessed via the issues endpoint.
-                            # Store them under PR events so they show up with other PR activity.
-                            self.pr_events.append(
-                                {
-                                    "repository": full_name,
-                                    "number": number,
-                                    "title": title,
-                                    "author": c_user,
-                                    "event_type": "comment",
-                                    "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
-                                    "url": url,
-                                }
-                            )
-                        else:
-                            self.issue_events.append(
-                                {
-                                    "repository": full_name,
-                                    "number": number,
-                                    "title": title,
-                                    "author": c_user,
-                                    "event_type": "comment",
-                                    "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
-                                    "url": url,
-                                }
-                            )
+            # --- Repo-wide comments (PR conversation + issue comments) ---
+            if include_pr_comments or issue_numbers or include_issue_pr_comments:
+                repo_comments = self._iter_repo_issue_comments(full_name, start_date=start_date)
+                for c in repo_comments:
+                    c_user = ((c.get("user") or {}).get("login") or "Unknown")
+                    if not is_allowed(c_user):
+                        continue
+                    c_dt = _parse_iso8601(c.get("created_at"))
+                    if not c_dt:
+                        continue
+                    if start_date and _to_utc(c_dt) < _to_utc(start_date):
+                        continue
+                    if end_date and _to_utc(c_dt) > _to_utc(end_date):
+                        continue
+
+                    issue_number = _parse_number_from_api_url(c.get("issue_url"))
+                    if issue_number is None:
+                        continue
+
+                    date = _date_key(c_dt)
+                    data[c_user][date]["issue_comments"] += 1
+
+                    if issue_number in pr_numbers and include_pr_comments:
+                        meta = pr_meta.get(issue_number) or {}
+                        self.pr_events.append(
+                            {
+                                "repository": full_name,
+                                "number": issue_number,
+                                "title": meta.get("title"),
+                                "author": c_user,
+                                "event_type": "comment",
+                                "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
+                                "url": meta.get("url"),
+                            }
+                        )
+                    elif issue_number in issue_numbers:
+                        meta = issue_meta.get(issue_number) or {}
+                        self.issue_events.append(
+                            {
+                                "repository": full_name,
+                                "number": issue_number,
+                                "title": meta.get("title"),
+                                "author": c_user,
+                                "event_type": "comment",
+                                "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
+                                "url": meta.get("url"),
+                            }
+                        )
+
+            # --- Repo-wide PR review comments ---
+            if include_pr_comments and include_pr_review_comments:
+                review_comments = self._iter_repo_pr_review_comments(full_name, start_date=start_date)
+                for c in review_comments:
+                    c_user = ((c.get("user") or {}).get("login") or "Unknown")
+                    if not is_allowed(c_user):
+                        continue
+                    c_dt = _parse_iso8601(c.get("created_at"))
+                    if not c_dt:
+                        continue
+                    if start_date and _to_utc(c_dt) < _to_utc(start_date):
+                        continue
+                    if end_date and _to_utc(c_dt) > _to_utc(end_date):
+                        continue
+
+                    pr_number = _parse_number_from_api_url(c.get("pull_request_url"))
+                    if pr_number is None or pr_number not in pr_numbers:
+                        continue
+                    meta = pr_meta.get(pr_number) or {}
+                    date = _date_key(c_dt)
+                    data[c_user][date]["issue_comments"] += 1
+                    self.pr_events.append(
+                        {
+                            "repository": full_name,
+                            "number": pr_number,
+                            "title": meta.get("title"),
+                            "author": c_user,
+                            "event_type": "review_comment",
+                            "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
+                            "url": meta.get("url"),
+                        }
+                    )
 
         # Convert to DataFrame
         rows: List[Dict] = []
