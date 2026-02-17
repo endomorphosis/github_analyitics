@@ -35,6 +35,7 @@ DEFAULT_NATIVE_FS_EXCLUDES = {
     '.pnpm-store',
     '.yarn',
     '.cache',
+    '.config',
     '.mypy_cache',
     '.pytest_cache',
     '.ruff_cache',
@@ -42,6 +43,7 @@ DEFAULT_NATIVE_FS_EXCLUDES = {
     # VCS
     '.git',
     '.hg',
+    '.ipfs',
     '.svn',
 }
 
@@ -166,7 +168,10 @@ def describe_scan_root(scan_root: Path, *, force: bool = False) -> ScanRootInfo:
     if platform.startswith('linux'):
         mountpoint, fstype = _linux_mount_for_path(scan_root)
         fstype_norm = (fstype or '').lower().strip() or None
-        allowed_types = {'ext2', 'ext3', 'ext4'}
+        # We can safely traverse and stat() files on any local filesystem.
+        # This gate exists primarily to avoid surprising scans on network/remote FS.
+        # Linux support focus: ext2-4 and ZFS.
+        allowed_types = {'ext2', 'ext3', 'ext4', 'zfs'}
         if force:
             return ScanRootInfo(scan_root, mountpoint, fstype_norm, True, None)
         if fstype_norm in allowed_types:
@@ -192,8 +197,6 @@ def describe_scan_root(scan_root: Path, *, force: bool = False) -> ScanRootInfo:
 
 def _should_skip_dir_name(name: str, exclude_set: set[str]) -> bool:
     if not name:
-        return True
-    if name.startswith('.'):
         return True
     return name in exclude_set
 
@@ -262,8 +265,6 @@ def iter_native_fs_file_events(
                     except OSError:
                         is_file = False
                     if not is_file:
-                        continue
-                    if name.startswith('.'):
                         continue
 
                     try:

@@ -137,58 +137,95 @@ class GitHubAnalytics:
         if end_date:
             params["until"] = _to_utc(end_date).isoformat().replace("+00:00", "Z")
 
-        items = gh_api_json(f"/repos/{full_name}/commits", params=params, paginate=True) or []
-        return list(items)
+        try:
+            items = gh_api_json(f"/repos/{full_name}/commits", params=params, paginate=True) or []
+            return list(items)
+        except GhCliError as e:
+            msg = str(e)
+            # GitHub returns HTTP 409 for empty repositories.
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
 
     def _get_commit_detail(self, full_name: str, sha: str) -> Dict:
         return gh_api_json(f"/repos/{full_name}/commits/{sha}") or {}
 
     def _iter_pulls(self, full_name: str) -> List[Dict]:
-        return list(
-            gh_api_json(
-                f"/repos/{full_name}/pulls",
-                params={"state": "all", "per_page": "100"},
-                paginate=True,
+        try:
+            return list(
+                gh_api_json(
+                    f"/repos/{full_name}/pulls",
+                    params={"state": "all", "per_page": "100"},
+                    paginate=True,
+                )
+                or []
             )
-            or []
-        )
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
 
     def _iter_issues(self, full_name: str, *, start_date: Optional[datetime]) -> List[Dict]:
         params: Dict[str, str] = {"state": "all", "per_page": "100"}
         # This filters by update time (not create time), but helps keep payload manageable.
         if start_date:
             params["since"] = _to_utc(start_date).isoformat().replace("+00:00", "Z")
-        return list(gh_api_json(f"/repos/{full_name}/issues", params=params, paginate=True) or [])
+        try:
+            return list(gh_api_json(f"/repos/{full_name}/issues", params=params, paginate=True) or [])
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
 
     def _iter_issue_comments(self, full_name: str, number: int) -> List[Dict]:
-        return list(
-            gh_api_json(
-                f"/repos/{full_name}/issues/{number}/comments",
-                params={"per_page": "100"},
-                paginate=True,
+        try:
+            return list(
+                gh_api_json(
+                    f"/repos/{full_name}/issues/{number}/comments",
+                    params={"per_page": "100"},
+                    paginate=True,
+                )
+                or []
             )
-            or []
-        )
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
 
     def _iter_pr_review_comments(self, full_name: str, number: int) -> List[Dict]:
-        return list(
-            gh_api_json(
-                f"/repos/{full_name}/pulls/{number}/comments",
-                params={"per_page": "100"},
-                paginate=True,
+        try:
+            return list(
+                gh_api_json(
+                    f"/repos/{full_name}/pulls/{number}/comments",
+                    params={"per_page": "100"},
+                    paginate=True,
+                )
+                or []
             )
-            or []
-        )
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
 
     def _iter_pr_reviews(self, full_name: str, number: int) -> List[Dict]:
-        return list(
-            gh_api_json(
-                f"/repos/{full_name}/pulls/{number}/reviews",
-                params={"per_page": "100"},
-                paginate=True,
+        try:
+            return list(
+                gh_api_json(
+                    f"/repos/{full_name}/pulls/{number}/reviews",
+                    params={"per_page": "100"},
+                    paginate=True,
+                )
+                or []
             )
-            or []
-        )
+        except GhCliError as e:
+            msg = str(e)
+            if "Repository is empty" in msg or "(HTTP 409" in msg or "HTTP 409" in msg:
+                return []
+            raise
 
     def analyze_all_repositories(
         self,
@@ -472,7 +509,9 @@ class GitHubAnalytics:
                 created_at = _parse_iso8601(issue.get("created_at"))
                 closed_at = _parse_iso8601(issue.get("closed_at"))
 
-                if created_at and (not start_date or _to_utc(created_at) >= _to_utc(start_date)) and (
+                # NOTE: PRs appear in the issues endpoint. We treat Issue Events as *issues only*.
+                # If include_issue_pr_comments is enabled, we only keep PR conversation comments (below).
+                if (not is_pr) and created_at and (not start_date or _to_utc(created_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(created_at) <= _to_utc(end_date)
                 ):
                     if is_allowed(author):
@@ -490,7 +529,7 @@ class GitHubAnalytics:
                             }
                         )
 
-                if closed_at and (not start_date or _to_utc(closed_at) >= _to_utc(start_date)) and (
+                if (not is_pr) and closed_at and (not start_date or _to_utc(closed_at) >= _to_utc(start_date)) and (
                     not end_date or _to_utc(closed_at) <= _to_utc(end_date)
                 ):
                     if is_allowed(author):
@@ -524,17 +563,32 @@ class GitHubAnalytics:
                             continue
                         date = _date_key(c_dt)
                         data[c_user][date]["issue_comments"] += 1
-                        self.issue_events.append(
-                            {
-                                "repository": full_name,
-                                "number": number,
-                                "title": title,
-                                "author": c_user,
-                                "event_type": "comment",
-                                "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
-                                "url": url,
-                            }
-                        )
+                        if is_pr:
+                            # PR conversation comments accessed via the issues endpoint.
+                            # Store them under PR events so they show up with other PR activity.
+                            self.pr_events.append(
+                                {
+                                    "repository": full_name,
+                                    "number": number,
+                                    "title": title,
+                                    "author": c_user,
+                                    "event_type": "comment",
+                                    "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
+                                    "url": url,
+                                }
+                            )
+                        else:
+                            self.issue_events.append(
+                                {
+                                    "repository": full_name,
+                                    "number": number,
+                                    "title": title,
+                                    "author": c_user,
+                                    "event_type": "comment",
+                                    "event_timestamp": _to_utc(c_dt).isoformat().replace("+00:00", "Z"),
+                                    "url": url,
+                                }
+                            )
 
         # Convert to DataFrame
         rows: List[Dict] = []

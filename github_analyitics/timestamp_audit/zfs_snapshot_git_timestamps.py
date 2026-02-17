@@ -71,6 +71,33 @@ def is_git_repo_dir(path: Path) -> bool:
     return _is_bare_git_repo_dir(path)
 
 
+def is_usable_git_repo_dir(path: Path) -> bool:
+    """Return True if the repo appears usable *within this filesystem tree*.
+
+    ZFS snapshots often contain Git worktrees where `.git` is a file pointing to a
+    gitdir outside the snapshot. Those paths look like repos, but `git -C <path>`
+    won't work and our fallback walk would incorrectly treat them as non-git repos.
+    """
+    if not is_git_repo_dir(path):
+        return False
+    git_dir = resolve_git_dir(path)
+    if git_dir is None:
+        return False
+    try:
+        if not git_dir.exists():
+            return False
+    except OSError:
+        return False
+
+    # Minimal signature for both normal and bare repositories.
+    head = git_dir / 'HEAD'
+    config = git_dir / 'config'
+    try:
+        return head.is_file() and config.is_file()
+    except OSError:
+        return False
+
+
 def ensure_sudo_credentials() -> bool:
     if shutil.which('sudo') is None:
         return False
@@ -232,7 +259,7 @@ def find_git_roots(base_path: Path, max_depth: int) -> List[Path]:
         if depth > max_depth:
             return
         try:
-            if is_git_repo_dir(current):
+            if is_usable_git_repo_dir(current):
                 git_roots.append(current)
                 return
 
@@ -318,9 +345,17 @@ def infer_repository_identifier(repo_root: Path) -> str:
 def iter_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
     exclude_set = set(excludes)
 
+    # If the gitdir is missing/broken inside a snapshot, do not fall back to a raw
+    # filesystem walk (that would violate the "git repos only" intent).
+    if not is_usable_git_repo_dir(repo_root):
+        return
+
     def is_excluded(rel_path: Path) -> bool:
         parts = rel_path.parts
         if not parts:
+            return True
+        # Never include git internals.
+        if '.git' in parts:
             return True
         # Preserve historical behavior: skip dotfiles.
         if rel_path.name.startswith('.'):
@@ -357,6 +392,7 @@ def iter_files(repo_root: Path, excludes: Iterable[str]) -> Iterable[Path]:
         pass
 
     # Fallback: filesystem walk with coarse exclusions.
+    # Only used when the repo is known-usable but `git ls-files` failed.
     for root, dirs, files in os.walk(repo_root):
         dirs[:] = [d for d in dirs if d not in exclude_set]
         for name in files:
@@ -494,6 +530,8 @@ def iter_snapshot_rows(
     verbose: bool = False,
     progress_every_seconds: Optional[float] = None,
 ) -> Iterable[Dict[str, str]]:
+    if not is_usable_git_repo_dir(repo_root):
+        return
     repo_id = infer_repository_identifier(repo_root)
 
     analytics = LocalGitAnalytics(str(repo_root))

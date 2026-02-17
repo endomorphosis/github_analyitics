@@ -33,6 +33,7 @@ setup(
         "console_scripts": [
             "github-analyitics-report=github_analyitics.reporting.github_analytics:main",
             "github-analyitics-timestamps=github_analyitics.timestamp_audit.timestamp_suite:main",
+            "github-analyitics-timestamps-user=github_analyitics.timestamp_audit.timestamp_suite_user:main",
             "github-analyitics-local=github_analyitics.timestamp_audit.local_git_analytics:main",
             "github-analyitics-clone=github_analyitics.reporting.clone_and_analyze:main",
         ]

@@ -313,7 +313,12 @@ def main() -> None:
     parser.add_argument('--zfs-snapshot-roots-limit', type=int, default=0, help='ZFS: max detected roots to scan (0=all; default: 0)')
     parser.add_argument('--zfs-scan-mode', choices=['match-repos-path', 'full'], default='full')
     parser.add_argument('--zfs-snapshots-limit', type=int, default=0, help='ZFS: max snapshots per root (0=all; default: 0)')
-    parser.add_argument('--zfs-granularity', choices=['repo_index', 'repo_root', 'file'], default='file')
+    parser.add_argument(
+        '--zfs-granularity',
+        choices=['repo_index', 'repo_root', 'file'],
+        default='file',
+        help='ZFS: event granularity (default: file)',
+    )
     parser.add_argument('--zfs-exclude', action='append', default=[], help='ZFS: exclude dir name (repeatable)')
     parser.add_argument('--zfs-max-seconds-per-root', type=float, default=None, help='ZFS: time budget per root')
 

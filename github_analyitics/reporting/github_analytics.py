@@ -560,7 +560,9 @@ class GitHubAnalytics:
                 try:
                     # Pull requests show up in issues too.
                     # By default we skip them, but we can optionally capture PR comments via the issue API.
-                    is_pr = bool(getattr(issue, 'pull_request', None))
+                    # PyGithub can sometimes omit/flatten `pull_request`; also treat /pull/ URLs as PRs.
+                    issue_url = getattr(issue, 'html_url', '') or ''
+                    is_pr = bool(getattr(issue, 'pull_request', None)) or ('/pull/' in issue_url)
                     if is_pr and not include_pull_requests:
                         continue
                     
@@ -593,7 +595,7 @@ class GitHubAnalytics:
                                     'author': author,
                                     'event_type': 'created' if not is_pr else 'pr_created',
                                     'event_timestamp': created_date.isoformat(),
-                                    'url': issue.html_url
+                                    'url': issue_url
                                 })
                     
                     # Check if closed
@@ -616,7 +618,7 @@ class GitHubAnalytics:
                                 'author': author,
                                 'event_type': 'closed' if not is_pr else 'pr_closed',
                                 'event_timestamp': closed_date.isoformat(),
-                                'url': issue.html_url
+                                'url': issue_url
                             })
                     
                     # Count comments
@@ -636,16 +638,30 @@ class GitHubAnalytics:
                             comment_key = comment_date.strftime('%Y-%m-%d')
                             data[commenter][comment_key]['issue_comments'] += 1
 
-                            if self.issue_events is not None:
-                                self.issue_events.append({
-                                    'repository': repo_full_name,
-                                    'number': issue.number,
-                                    'title': issue.title,
-                                    'author': commenter,
-                                    'event_type': 'comment' if not is_pr else 'pr_comment',
-                                    'event_timestamp': comment_date.isoformat(),
-                                    'url': issue.html_url
-                                })
+                            # If this is actually a PR (via the issues API), treat these as PR conversation
+                            # comments. We record them under PR events to avoid duplicating PRs in Issue Events.
+                            if is_pr and include_pull_request_comments_only:
+                                if self.pr_events is not None:
+                                    self.pr_events.append({
+                                        'repository': repo_full_name,
+                                        'number': issue.number,
+                                        'title': issue.title,
+                                        'author': commenter,
+                                        'event_type': 'comment',
+                                        'event_timestamp': comment_date.isoformat(),
+                                        'url': issue_url,
+                                    })
+                            else:
+                                if self.issue_events is not None:
+                                    self.issue_events.append({
+                                        'repository': repo_full_name,
+                                        'number': issue.number,
+                                        'title': issue.title,
+                                        'author': commenter,
+                                        'event_type': 'comment',
+                                        'event_timestamp': comment_date.isoformat(),
+                                        'url': issue_url
+                                    })
                     except Exception:
                         pass
                         

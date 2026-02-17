@@ -80,6 +80,14 @@ Convenience script:
 ./run_timestamp_suite.sh
 ```
 
+Scan another user's repositories (same suite, convenience entry point):
+
+```bash
+github-analyitics-timestamps-user <github_username> --sources github
+```
+
+This is equivalent to running the suite with `--github-username <github_username>`.
+
 ### Performance & scaling
 
 If you’re scanning many local repos and/or large ZFS snapshot trees, these options help speed things up without hammering GitHub (they only affect local + ZFS work):

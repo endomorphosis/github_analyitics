@@ -301,8 +301,21 @@ def ensure_sudo_credentials() -> bool:
 
     print("ZFS detection may require sudo. If prompted, enter your sudo password.")
     try:
-        proc = subprocess.run(['sudo', '-v'], check=False)
-        return proc.returncode == 0
+        # Always try a non-interactive check first to avoid hanging in pseudo-TTY contexts.
+        proc = subprocess.run(['sudo', '-n', '-v'], check=False, capture_output=True, text=True)
+        if proc.returncode == 0:
+            return True
+
+        # Only fall back to an interactive prompt when stdin is actually interactive.
+        if sys.stdin.isatty():
+            proc2 = subprocess.run(['sudo', '-v'], check=False)
+            return proc2.returncode == 0
+
+        msg = (proc.stderr or proc.stdout or '').strip()
+        if msg:
+            print(msg)
+        print("Sudo is required but this session cannot accept a password prompt. Run `sudo -v` in an interactive terminal first, then retry.")
+        return False
     except Exception:
         return False
 
@@ -853,8 +866,14 @@ def main() -> None:
         )
     repos_path = guess_repos_base_path(args.repos_path)
     max_depth = detect_max_depth(repos_path, args.max_depth)
-    snapshot_roots = detect_zfs_snapshot_roots(args.zfs_snapshot_root)
     allow_sudo = not args.no_sudo
+
+    # Proactively prompt for sudo when ZFS scanning is enabled.
+    # Snapshot root discovery/traversal may require elevated access.
+    if allow_sudo and os.geteuid() != 0:
+        ensure_sudo_credentials()
+
+    snapshot_roots = detect_zfs_snapshot_roots(args.zfs_snapshot_root)
 
     if args.zfs_snapshot_root is None and snapshot_roots:
         snapshot_roots = rank_snapshot_roots(snapshot_roots)

@@ -342,6 +342,24 @@ class TestTimestampSpreadsheets(unittest.TestCase):
             self.assertTrue((df["source"] == "local_git").any())
             _assert_timestamp_column_parseable(self, df, "event_timestamp")
 
+    def test_duckdb_store_widens_commit_column_to_varchar(self):
+        import duckdb
+
+        from github_analyitics.timestamp_audit.duckdb_store import DuckDbStore
+
+        con = duckdb.connect(":memory:")
+        con.execute('CREATE TABLE "all_events" ("commit" INTEGER, "repository" VARCHAR)')
+
+        rows = [
+            {"commit": 123, "repository": "owner/repo"},
+            {"commit": "deadbeef", "repository": "owner/repo"},
+        ]
+        written = DuckDbStore.append_rows(con, "all_events", rows, batch_size=10)
+        self.assertEqual(written, 2)
+
+        types = {r[1]: str(r[2]).upper() for r in con.execute("PRAGMA table_info('all_events')").fetchall()}
+        self.assertEqual(types.get("commit"), "VARCHAR")
+
     def test_timestamp_suite_zfs_sudo_preflight_runs_when_required(self):
         from github_analyitics.timestamp_audit import timestamp_suite as suite
 

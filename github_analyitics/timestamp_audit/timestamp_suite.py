@@ -412,7 +412,12 @@ def main() -> None:
     )
     parser.add_argument('--zfs-scan-mode', choices=['match-repos-path', 'full'], default='full')
     parser.add_argument('--zfs-snapshots-limit', type=int, default=0, help='ZFS: max snapshots per root (0=all; default: 0)')
-    parser.add_argument('--zfs-granularity', choices=['repo_index', 'repo_root', 'file'], default='file')
+    parser.add_argument(
+        '--zfs-granularity',
+        choices=['repo_index', 'repo_root', 'file'],
+        default='file',
+        help='ZFS: event granularity (default: file)',
+    )
     parser.add_argument(
         '--zfs-git-workers',
         type=int,
@@ -440,6 +445,16 @@ def main() -> None:
         action='append',
         default=[],
         help='Native FS: scan root path (repeatable). If omitted and fs source enabled, defaults to --repos-path base.',
+    )
+    parser.add_argument(
+        '--fs-root-home',
+        action='store_true',
+        help='Native FS: also scan the current user\'s home directory (~ on Linux/macOS, %USERPROFILE% on Windows).',
+    )
+    parser.add_argument(
+        '--fs-only-git-repos',
+        action='store_true',
+        help='Native FS: only scan directories that look like git repos under the fs roots (depth uses --max-depth when set).',
     )
     parser.add_argument('--fs-exclude', action='append', default=[], help='Native FS: exclude dir name (repeatable)')
     parser.add_argument('--fs-follow-symlinks', action='store_true', help='Native FS: follow symlinks (default: false)')
@@ -534,29 +549,51 @@ def main() -> None:
 
     allowed_lower = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
 
-    def row_is_allowed(row: Dict) -> bool:
+    def scrub_row_identities(row: Dict) -> Dict:
+        """Ensure the row contains only allowlisted identity values.
+
+        Instead of dropping rows with non-allowlisted identities (which makes ZFS/FS
+        coverage appear incomplete), we blank identity fields that are not in the
+        allowlist. Empty identity fields are considered acceptable.
+        """
         if not allowed_lower:
-            return True
-        for col in ("user", "author", "attributed_user"):
-            v = row.get(col)
+            return row
+
+        out = dict(row)
+
+        # Core identity fields: enforce allowlist strictly.
+        for col in ('user', 'author', 'attributed_user', 'email'):
+            v = out.get(col)
             if v is None:
                 continue
             sv = str(v).strip()
             if sv == "":
                 continue
             if sv.lower() not in allowed_lower:
-                return False
-        return True
+                out[col] = ""
+
+        # Invoker attribution fields: keep allowlisted identities, and also preserve
+        # GitHub Copilot markers so copilot_involved/invoker_source remain explainable.
+        copilot_allowed = {'github copilot', 'copilot@github.com'}
+        for col in ('raw_author', 'raw_email'):
+            v = out.get(col)
+            if v is None:
+                continue
+            sv = str(v).strip()
+            if sv == "":
+                continue
+            sv_lower = sv.lower()
+            if (sv_lower not in allowed_lower) and (sv_lower not in copilot_allowed):
+                out[col] = ""
+        return out
 
     def duckdb_append_all_events(rows: List[Dict]) -> None:
         if duck_con is None:
             return
         if not rows:
             return
-        filtered = [r for r in rows if row_is_allowed(r)]
-        if not filtered:
-            return
-        DuckDbStore.append_rows(duck_con, 'all_events', filtered, batch_size=duck_batch_size)
+        sanitized = [scrub_row_identities(r) for r in rows]
+        DuckDbStore.append_rows(duck_con, 'all_events', sanitized, batch_size=duck_batch_size)
 
     if use_duckdb:
         duck_path = (getattr(args, 'duckdb_path', None) or '').strip()
@@ -595,6 +632,12 @@ def main() -> None:
         if want_zfs:
             if verbose:
                 print("Detecting ZFS snapshot roots...")
+
+            # Proactively prompt for sudo credentials when ZFS scanning is enabled.
+            # This matches the expectation that ZFS snapshot discovery/traversal may
+            # require elevated access.
+            if allow_sudo and os.geteuid() != 0:
+                ensure_sudo_credentials()
 
             # Default behavior: scan *all* detected snapshot roots.
             # If the user explicitly wants a single root (useful for deterministic tests),
@@ -742,9 +785,7 @@ def main() -> None:
         def zfs_row_sink(row: Dict) -> None:
             if duck_con is None:
                 return
-            if not row_is_allowed(row):
-                return
-            zfs_stream_buffer.append(dict(row))
+            zfs_stream_buffer.append(scrub_row_identities(row))
             if len(zfs_stream_buffer) >= duck_batch_size:
                 DuckDbStore.append_rows(duck_con, 'all_events', zfs_stream_buffer, batch_size=duck_batch_size)
                 zfs_stream_buffer.clear()
@@ -790,6 +831,12 @@ def main() -> None:
         t0 = time.perf_counter()
 
         fs_roots = [Path(p).expanduser() for p in (getattr(args, 'fs_root', None) or []) if str(p).strip()]
+
+        if bool(getattr(args, 'fs_root_home', False)):
+            home_root = Path.home().expanduser()
+            if all(str(home_root) != str(existing) for existing in fs_roots):
+                fs_roots.append(home_root)
+
         if not fs_roots:
             # Default to scanning the repo base path when fs source is enabled.
             repos_path = guess_repos_base_path(args.repos_path)
@@ -797,15 +844,35 @@ def main() -> None:
             if verbose:
                 print(f"Native FS: --fs-root not provided; defaulting to repos base path: {repos_path}")
 
+        if bool(getattr(args, 'fs_only_git_repos', False)):
+            repo_roots: List[Path] = []
+            seen = set()
+            for root in fs_roots:
+                depth = detect_max_depth(root, args.max_depth)
+                for repo in find_git_roots(root, depth):
+                    key = str(repo)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    repo_roots.append(repo)
+            fs_roots = repo_roots
+            if verbose:
+                print(f"Native FS: repo-only mode enabled; discovered {len(fs_roots)} repo root(s)")
+
+        if verbose:
+            if fs_roots:
+                roots_str = ", ".join(str(p) for p in fs_roots)
+                print(f"Native FS: scanning {len(fs_roots)} root(s): {roots_str}")
+            else:
+                print("Native FS: no scan roots resolved; skipping native filesystem sweep")
+
         fs_excludes = sorted(set(DEFAULT_NATIVE_FS_EXCLUDES).union(args.fs_exclude))
         fs_stream_buffer: List[Dict] = []
 
         def fs_row_sink(row: Dict) -> None:
             if duck_con is None:
                 return
-            if not row_is_allowed(row):
-                return
-            fs_stream_buffer.append(dict(row))
+            fs_stream_buffer.append(scrub_row_identities(row))
             if len(fs_stream_buffer) >= duck_batch_size:
                 DuckDbStore.append_rows(duck_con, 'all_events', fs_stream_buffer, batch_size=duck_batch_size)
                 fs_stream_buffer.clear()
@@ -921,13 +988,25 @@ def main() -> None:
         )
 
         # Safety net: ensure output contains only allowlisted identities.
-        if allowed_users:
-            allowed_lower_df = {str(u).strip().lower() for u in allowed_users if u and str(u).strip()}
-            for col in ("user", "author", "attributed_user"):
+        if allowed_lower and not all_events_df.empty:
+            copilot_allowed = {'github copilot', 'copilot@github.com'}
+
+            for col in ("user", "author", "attributed_user", "email"):
                 if col in all_events_df.columns:
                     s = all_events_df[col]
-                    mask = s.isna() | (s.astype(str).str.strip() == "") | s.astype(str).str.strip().str.lower().isin(allowed_lower_df)
-                    all_events_df = all_events_df[mask]
+                    mask_allowed = s.isna() | (s.astype(str).str.strip() == "") | s.astype(str).str.strip().str.lower().isin(allowed_lower)
+                    all_events_df.loc[~mask_allowed, col] = ""
+
+            for col in ("raw_author", "raw_email"):
+                if col in all_events_df.columns:
+                    s = all_events_df[col]
+                    mask_allowed = (
+                        s.isna()
+                        | (s.astype(str).str.strip() == "")
+                        | s.astype(str).str.strip().str.lower().isin(allowed_lower)
+                        | s.astype(str).str.strip().str.lower().isin(copilot_allowed)
+                    )
+                    all_events_df.loc[~mask_allowed, col] = ""
 
     with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
         if verbose:
@@ -949,7 +1028,14 @@ def main() -> None:
                 con=duck_con,
                 writer=writer,
                 sheet_base='Native FS Timestamps',
-                query="SELECT * FROM all_events WHERE source = 'native_fs' ORDER BY event_timestamp DESC",
+                # Working-tree mtimes are also filesystem timestamps; include them here so this sheet
+                # isn't empty when only working-tree timestamps were collected.
+                query="""
+                    SELECT *
+                    FROM all_events
+                    WHERE source IN ('native_fs', 'working_tree')
+                    ORDER BY event_timestamp DESC
+                """,
                 excel_max_rows=max_rows,
                 allow_empty=True,
             )
@@ -998,7 +1084,12 @@ def main() -> None:
             write_sheet(writer, 'ZFS Snapshot Timestamps', zfs_df, allow_empty=True)
             write_sheet(writer, 'ZFS Scan Summary', dataframe_or_empty(zfs_scan_summary), allow_empty=True)
 
-            fs_df = dataframe_or_empty(fs_rows)
+            # Prefer showing filesystem-derived timestamps even when the standalone native FS
+            # source isn't enabled (working_tree timestamps come from the local sweep).
+            fs_df = all_events_df
+            if not fs_df.empty and 'source' in fs_df.columns:
+                fs_df = fs_df[fs_df['source'].isin(['native_fs', 'working_tree'])]
+            fs_df = dataframe_or_empty(fs_df.to_dict('records') if hasattr(fs_df, 'to_dict') else fs_df)
             if fs_df.empty:
                 fs_df = pd.DataFrame(
                     columns=[

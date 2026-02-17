@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -46,6 +47,105 @@ class DuckDbStore:
             return []
 
     @staticmethod
+    def _get_table_column_types(con, table: str) -> dict[str, str]:
+        """Return a mapping of column name -> DuckDB type (uppercased)."""
+        try:
+            rows = con.execute(f"PRAGMA table_info('{table}')").fetchall()
+            out: dict[str, str] = {}
+            for r in rows:
+                # (cid, name, type, notnull, dflt_value, pk)
+                if len(r) >= 3:
+                    out[str(r[1])] = str(r[2] or '').upper()
+            return out
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _value_looks_like_string(value: Any) -> bool:
+        if value is None:
+            return False
+        # pandas uses NaN/NaT which don't compare cleanly.
+        try:
+            if pd.isna(value):
+                return False
+        except Exception:
+            pass
+        return isinstance(value, str)
+
+    @staticmethod
+    def _series_has_string_values(series: pd.Series, *, sample: int = 50) -> bool:
+        """Heuristic: does this series contain string values?
+
+        Sampling keeps this cheap for very large batches.
+        """
+        if series is None or series.empty:
+            return False
+        try:
+            non_null = series.dropna()
+        except Exception:
+            non_null = series
+        if non_null is None or len(non_null) == 0:
+            return False
+
+        # Check up to N values.
+        checked = 0
+        for v in non_null.head(sample).tolist():
+            checked += 1
+            if DuckDbStore._value_looks_like_string(v):
+                return True
+        return False
+
+    @staticmethod
+    def _maybe_widen_columns_to_varchar(con, table: str, df: pd.DataFrame) -> None:
+        """Widen incompatible existing column types to VARCHAR.
+
+        DuckDB infers table schemas from the first batch. If a column (notably
+        'commit') is inferred as an integer, later batches that contain SHA
+        strings will fail to insert. When we detect incoming string values for
+        a column whose existing type is numeric, we widen it to VARCHAR.
+        """
+        if df is None or df.empty:
+            return
+
+        types = DuckDbStore._get_table_column_types(con, table)
+        if not types:
+            return
+
+        numeric_types = {
+            'TINYINT',
+            'SMALLINT',
+            'INTEGER',
+            'INT',
+            'BIGINT',
+            'UTINYINT',
+            'USMALLINT',
+            'UINTEGER',
+            'UBIGINT',
+            'HUGEINT',
+            'UHUGEINT',
+        }
+
+        for col in df.columns:
+            existing = types.get(str(col))
+            if not existing:
+                continue
+            if existing == 'VARCHAR':
+                continue
+            if existing not in numeric_types:
+                continue
+
+            try:
+                series = df[col]
+            except Exception:
+                continue
+
+            if not DuckDbStore._series_has_string_values(series):
+                continue
+
+            safe_col = str(col).replace('"', '""')
+            con.execute(f'ALTER TABLE "{table}" ALTER COLUMN "{safe_col}" TYPE VARCHAR')
+
+    @staticmethod
     def _ensure_columns(con, table: str, columns: Iterable[str]) -> None:
         existing = set(DuckDbStore._get_table_columns(con, table))
         for col in columns:
@@ -82,14 +182,28 @@ class DuckDbStore:
         if df.empty:
             return 0
 
+        # DuckDB versions in the wild don't consistently support pandas
+        # extension dtypes like StringDtype (dtype name: 'str'). Normalize to
+        # plain object dtype for ingestion.
+        for col in df.columns:
+            try:
+                if isinstance(df[col].dtype, pd.StringDtype):
+                    df[col] = df[col].astype(object)
+            except Exception:
+                pass
+
         view = f"__tmp_{table}"
         con.register(view, df)
         try:
             if not DuckDbStore._get_table_columns(con, table):
                 con.execute(f'CREATE TABLE "{table}" AS SELECT * FROM {view}')
+                # Ensure we don't lock in incompatible integer types for
+                # columns that may later contain strings (e.g., commit SHAs).
+                DuckDbStore._maybe_widen_columns_to_varchar(con, table, df)
                 return int(len(df))
 
             DuckDbStore._ensure_columns(con, table, df.columns)
+            DuckDbStore._maybe_widen_columns_to_varchar(con, table, df)
 
             table_cols = DuckDbStore._get_table_columns(con, table)
             for col in table_cols:
