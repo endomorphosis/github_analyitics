@@ -32,6 +32,7 @@ from github_analyitics.reporting.gh_cli import (
     ensure_gh_available,
     gh_api_json,
     gh_auth_login,
+    gh_graphql_json,
 )
 
 
@@ -277,6 +278,101 @@ class GitHubAnalytics:
                 return []
             raise
 
+    def _iter_pr_review_submissions_graphql(
+        self,
+        full_name: str,
+        *,
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+    ) -> List[Dict]:
+        """Fetch PR review submission events for a repo via GraphQL.
+
+        This avoids per-PR REST calls to `/pulls/{n}/reviews`, which can exhaust
+        REST core rate limits on large accounts.
+        """
+        owner, _, name = (full_name or "").partition("/")
+        if not owner or not name:
+            return []
+
+        query = """
+        query($owner:String!, $name:String!, $after:String) {
+          repository(owner:$owner, name:$name) {
+            pullRequests(first:50, after:$after, orderBy:{field:UPDATED_AT, direction:DESC}, states:[OPEN,CLOSED,MERGED]) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                number
+                title
+                url
+                updatedAt
+                reviews(first:50) {
+                  nodes {
+                    submittedAt
+                    author { login }
+                  }
+                }
+              }
+            }
+          }
+        }
+        """
+
+        events: List[Dict] = []
+        after: Optional[str] = None
+
+        start_utc = _to_utc(start_date) if start_date else None
+        end_utc = _to_utc(end_date) if end_date else None
+
+        while True:
+            payload = gh_graphql_json(query, variables={"owner": owner, "name": name, "after": after}) or {}
+            pr_conn = (((payload.get("data") or {}).get("repository") or {}).get("pullRequests") or {})
+            nodes = pr_conn.get("nodes") or []
+
+            stop = False
+            for pr in nodes:
+                pr_updated = _parse_iso8601(pr.get("updatedAt"))
+                if start_utc and pr_updated and _to_utc(pr_updated) < start_utc:
+                    # PRs are ordered by updatedAt DESC; once we pass the start window,
+                    # we can stop paginating.
+                    stop = True
+                    continue
+
+                number = pr.get("number")
+                title = pr.get("title")
+                url = pr.get("url")
+                for r in ((pr.get("reviews") or {}).get("nodes") or []):
+                    submitted = _parse_iso8601(r.get("submittedAt"))
+                    if not submitted:
+                        continue
+                    submitted_utc = _to_utc(submitted)
+                    if start_utc and submitted_utc < start_utc:
+                        continue
+                    if end_utc and submitted_utc > end_utc:
+                        continue
+                    reviewer = (((r.get("author") or {}).get("login")) or "Unknown")
+                    events.append(
+                        {
+                            "repository": full_name,
+                            "number": number,
+                            "title": title,
+                            "author": reviewer,
+                            "event_type": "review_submitted",
+                            "event_timestamp": submitted_utc.isoformat().replace("+00:00", "Z"),
+                            "url": url,
+                        }
+                    )
+
+            if stop:
+                break
+
+            page_info = pr_conn.get("pageInfo") or {}
+            if not page_info.get("hasNextPage"):
+                break
+            after = page_info.get("endCursor")
+            if not after:
+                break
+
+        return events
+
     def analyze_all_repositories(
         self,
         *,
@@ -485,30 +581,8 @@ class GitHubAnalytics:
                 # (see below) to avoid per-PR API calls.
 
                 if include_pr_review_events and number is not None:
-                    # Review submission events are still per-PR.
-                    for r in self._iter_pr_reviews(full_name, int(number)):
-                        r_user = ((r.get("user") or {}).get("login") or "Unknown")
-                        if not is_allowed(r_user):
-                            continue
-
-                        r_dt = _parse_iso8601(r.get("submitted_at"))
-                        if not r_dt:
-                            continue
-                        if start_date and _to_utc(r_dt) < _to_utc(start_date):
-                            continue
-                        if end_date and _to_utc(r_dt) > _to_utc(end_date):
-                            continue
-                        self.pr_events.append(
-                            {
-                                "repository": full_name,
-                                "number": number,
-                                "title": title,
-                                "author": r_user,
-                                "event_type": "review_submitted",
-                                "event_timestamp": _to_utc(r_dt).isoformat().replace("+00:00", "Z"),
-                                "url": url,
-                            }
-                        )
+                    # Review submission events are collected once per repo via GraphQL below.
+                    pass
 
             # --- Issues ---
             issues = self._iter_issues(full_name, start_date=start_date)
@@ -659,6 +733,20 @@ class GitHubAnalytics:
                             "url": meta.get("url"),
                         }
                     )
+
+            # --- PR review submission events (GraphQL batched) ---
+            if include_pr_review_events:
+                try:
+                    for ev in self._iter_pr_review_submissions_graphql(
+                        full_name,
+                        start_date=start_date,
+                        end_date=end_date,
+                    ):
+                        self.pr_events.append(ev)
+                except GhCliError:
+                    # If GraphQL fails for a repo, skip review submissions rather than
+                    # failing the entire run. This keeps runs resilient.
+                    pass
 
         # Convert to DataFrame
         rows: List[Dict] = []

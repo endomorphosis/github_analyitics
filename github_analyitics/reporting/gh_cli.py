@@ -121,5 +121,36 @@ def gh_api_json(
     return json.loads(out)
 
 
+def gh_graphql_json(
+    query: str,
+    *,
+    variables: Optional[Dict[str, Any]] = None,
+) -> Any:
+    """Call `gh api graphql` and parse JSON.
+
+    Args:
+        query: GraphQL query string.
+        variables: Optional variables dict (will be JSON-encoded).
+    """
+    # NOTE: `gh api graphql` treats additional `-f key=value` fields as GraphQL
+    # variables (matching `$key` in the query). Passing a JSON-encoded
+    # `variables={...}` string does not behave as a typed object and will cause
+    # GraphQL variable validation errors.
+    args: List[str] = ["api", "graphql", "-f", f"query={query}"]
+    if variables:
+        for k, v in variables.items():
+            if v is None:
+                continue
+            if isinstance(v, (dict, list)):
+                args.extend(["-f", f"{k}={json.dumps(v)}"])
+            else:
+                args.extend(["-f", f"{k}={v}"])
+
+    out = run_gh(args)
+    if not out:
+        return None
+    return json.loads(out)
+
+
 def gh_auth_login() -> str:
     return run_gh(["api", "user", "-q", ".login"])
